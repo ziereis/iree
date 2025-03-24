@@ -32,6 +32,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 
 #define DEBUG_TYPE "iree-gpu-attrs"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -97,11 +98,12 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::MFMA_F32_32x32x8_F16:
   case MMAIntrinsic::WMMAR3_F32_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F32_16x16x16_F16:
-  case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
+  case MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16:
+  // case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
     return {f16, f16, f32};
   case MMAIntrinsic::WMMAR3_F16_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F16_16x16x16_F16:
-  case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
+  // case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
     return {f16, f16, f16};
   case MMAIntrinsic::MFMA_F32_16x16x8_BF16:
   case MMAIntrinsic::MFMA_F32_32x32x4_BF16:
@@ -150,9 +152,9 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
 static std::tuple<int64_t, int64_t, int64_t>
 getUnsupportedMNKShape(MMAIntrinsic intrinsic) {
   switch (intrinsic) {
-  case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
-  case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
-    return {16, 16, 16};
+  // case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
+  // case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
+  //   return {16, 16, 16};
   default:
     assert(false && "unexpected enum value");
     return {};
@@ -337,9 +339,21 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
       return {/*outer=*/{1, 1}, /*thread=*/{2, 16}, /*tstrides=*/{16, 1},
               /*element=*/{8, 1}};
     }
-  case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
-  case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
-    return {};
+  case MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16:
+    switch (fragment) {
+    case MMAFragment::Lhs:
+      return {/*outer=*/{2, 2}, /*thread=*/{8, 4}, /*strides=*/{4, 1},
+              /*element=*/{1, 2}};
+    case MMAFragment::Rhs:
+      return {/*outer=*/{2, 1}, /*thread=*/{4, 8}, /*strides=*/{1, 4},
+              /*element=*/{2, 1}};
+    case MMAFragment::Acc:
+      return {/*outer=*/{2, 1}, /*thread=*/{8, 4}, /*strides=*/{4, 1},
+              /*element=*/{1, 2}};
+    }
+  // case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
+  // case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
+  //   return {};
   }
   assert(false && "unexpected enum value");
   return {};
@@ -357,6 +371,9 @@ struct OpaqueMmaLayout {
 
 static std::tuple<int64_t, int64_t, int64_t>
 getMNKShapeFromIntrinsic(MMAIntrinsic intrinsic) {
+  if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+    return {16,8,16};
+  }
   if (is_AMD(intrinsic)) {
     auto lhs = getSingleSubgroupLayout(intrinsic, MMAFragment::Lhs);
     auto rhs = getSingleSubgroupLayout(intrinsic, MMAFragment::Rhs);
@@ -426,6 +443,13 @@ std::tuple<VectorType, VectorType, VectorType>
 MMAAttr::getABCVectorTypes() const {
   MLIRContext *context = getContext();
   MMAIntrinsic intrinsic = getIntrinsic();
+  if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+    auto o = getOpaqueMMALayout(context, intrinsic);
+    auto aType = VectorType::get({4, 2}, o.aType);
+    auto bType = VectorType::get({2,2}, o.bType);
+    auto cType = VectorType::get({2,2}, o.cType);
+    return {aType, bType, cType};
+  }
   VectorType aVecType = getVectorType(context, intrinsic, MMAFragment::Lhs);
   VectorType bVecType = getVectorType(context, intrinsic, MMAFragment::Rhs);
   VectorType cVecType = getVectorType(context, intrinsic, MMAFragment::Acc);
@@ -443,10 +467,13 @@ int64_t MMAAttr::getSubgroupSize() const {
 FailureOr<IREE::GPU::MMAScope> MMAAttr::getMmaScope() const {
   // Explicit distribution currently unsupported for NV intrinsics.
   MMAIntrinsic intrinsic = getIntrinsic();
-  if (intrinsic == MMAIntrinsic::NV_WMMA_F16_16x16x16_F16 ||
-      intrinsic == MMAIntrinsic::NV_WMMA_F32_16x16x16_F16) {
-    return failure();
+  if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+    return IREE::GPU::MMAScope::Subgroup;
   }
+  // if (intrinsic == MMAIntrinsic::NV_WMMA_F16_16x16x16_F16 ||
+  //     intrinsic == MMAIntrinsic::NV_WMMA_F32_16x16x16_F16) {
+  //   return failure();
+  // }
   return IREE::GPU::MMAScope::Subgroup;
 }
 
@@ -488,8 +515,17 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
     return builder.create<amdgpu::WMMAOp>(loc, resultType, lhs, rhs, acc)
         .getResult();
   }
+  if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+    SmallVector<Attribute> mmaShape {
+      builder.getI64IntegerAttr(layout.mSize),
+          builder.getI64IntegerAttr(layout.nSize),
+          builder.getI64IntegerAttr(layout.kSize)};
+    ArrayAttr mmShapeAttr = builder.getArrayAttr(mmaShape);
+    return builder.create<nvgpu::MmaSyncOp>(loc, lhs, rhs, acc, mmShapeAttr).getResult();
+  }
   return {};
 }
+
 
 // Generates amdgpu.mfma/wmma operation on the given inputs for this attribute
 // type.
