@@ -515,8 +515,7 @@ StringRef normalizeARMGPUTarget(StringRef target) {
 
 const WgpDetails *getAmpereWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
-      MMAIntrinsic::NV_WMMA_F32_16x16x16_F16,
-      MMAIntrinsic::NV_WMMA_F16_16x16x16_F16,
+      MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16
   };
   static const WgpDetails ampereWgp = {allComputeBits,
                                        allStorageBits,
@@ -534,8 +533,6 @@ const WgpDetails *getAmpereWgpDetails() {
 
 const WgpDetails *getTuringWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
-      MMAIntrinsic::NV_WMMA_F32_16x16x16_F16,
-      MMAIntrinsic::NV_WMMA_F16_16x16x16_F16,
   };
   static const WgpDetails turingWgp = {allComputeBits,
                                        allStorageBits,
@@ -553,8 +550,6 @@ const WgpDetails *getTuringWgpDetails() {
 
 const WgpDetails *getVoltaWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
-      MMAIntrinsic::NV_WMMA_F32_16x16x16_F16,
-      MMAIntrinsic::NV_WMMA_F16_16x16x16_F16,
   };
   // clang-format off
   static const WgpDetails voltaWgp = {

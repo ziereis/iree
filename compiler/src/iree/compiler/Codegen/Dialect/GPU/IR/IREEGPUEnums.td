@@ -187,8 +187,9 @@ def WMMAR4_F32_16x16x16_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"WMMAR4_F32_16x16x16_F
 def WMMAR4_I32_16x16x16_I8 : I32EnumAttrCase<"WMMAR4_I32_16x16x16_I8", 0x19C0>;
 
 // NV intrinsics
-def NV_WMMA_F32_16x16x16_F16 : I32EnumAttrCase<"NV_WMMA_F32_16x16x16_F16", 0x2020>;
-def NV_WMMA_F16_16x16x16_F16 : I32EnumAttrCase<"NV_WMMA_F16_16x16x16_F16", 0x2021>;
+// def NV_WMMA_F32_16x16x16_F16 : I32EnumAttrCase<"NV_WMMA_F32_16x16x16_F16", 0x2020>;
+// def NV_WMMA_F16_16x16x16_F16 : I32EnumAttrCase<"NV_WMMA_F16_16x16x16_F16", 0x2021>;
+def NV_MMA_SYNC_F32_16x8x16_F16 : I32EnumAttrCase<"NV_MMA_SYNC_F32_16x8x16_F16", 0x2100>;
 
 def IREEGPU_MMAIntrinsic : IREEGPU_I32EnumAttr<"MMAIntrinsic",
     "Descriptor for different MMA intrinsics", [
@@ -237,8 +238,9 @@ def IREEGPU_MMAIntrinsic : IREEGPU_I32EnumAttr<"MMAIntrinsic",
       WMMAR4_I32_16x16x16_I8,
 
       // NV intrinsics
-      NV_WMMA_F32_16x16x16_F16,
-      NV_WMMA_F16_16x16x16_F16,
+      // NV_WMMA_F32_16x16x16_F16,
+      // NV_WMMA_F16_16x16x16_F16,
+      NV_MMA_SYNC_F32_16x8x16_F16,
     ]>;
 
 def VMFMA_F32_16x16x32_F16  : I32EnumAttrCase<"VMFMA_F32_16x16x32_F16", 0>;
