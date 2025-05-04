@@ -554,6 +554,12 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
         .getResult();
   }
   if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+    auto vec8f16  = VectorType::get({8}, builder.getF16Type());
+    auto a1d      = builder.create<vector::ShapeCastOp>(loc, vec8f16, lhs);
+    SmallVector<int64_t> aMask = {/*0*/0, /*1*/1, /*4*/4, /*5*/5,
+                                  /*2*/2, /*3*/3, /*6*/6, /*7*/7};
+    auto a1dShuf  = builder.create<vector::ShuffleOp>(loc, a1d, a1d, aMask);
+    lhs           = builder.create<vector::ShapeCastOp>(loc, lhs.getType(), a1dShuf);
     SmallVector<Attribute> mmaShape {
       builder.getI64IntegerAttr(layout.mSize),
           builder.getI64IntegerAttr(layout.nSize),
