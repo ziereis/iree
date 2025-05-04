@@ -12,7 +12,6 @@ b = torch.rand(16, 16, dtype=torch.float16)
 config = ireert.Config("cuda")
 vmm = ireert.VmModule.mmap(config.vm_instance, "matmul.vmfb")
 ctx = ireert.SystemContext(vm_modules=[vmm], config=config)
-# rt = AtticRuntime("contract_nv_sync.vmfb", driver=AtticRTDriver.CUDA)
 func = ctx.modules.module["matmul"]
 
 
