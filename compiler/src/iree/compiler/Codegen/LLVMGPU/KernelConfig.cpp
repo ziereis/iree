@@ -1826,8 +1826,6 @@ setVectorDistributionConfig(IREE::GPU::TargetAttr target,
                             Operation *computeOp) {
   // We haven't properly plumbed through MMA op layouts and conversions for CUDA
   // to target NVIDIA GPUs. So disable the vector distribution pass for it.
-  if (!isROCmBackend(target))
-    return failure();
 
   if (!clGPUEnableVectorDistribution) {
     LDBG("Vector Distribution not enabled, skipping...");

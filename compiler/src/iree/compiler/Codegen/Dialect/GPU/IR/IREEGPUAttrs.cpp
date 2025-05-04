@@ -100,11 +100,9 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::WMMAR3_F32_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F32_16x16x16_F16:
   case MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16:
-  // case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
     return {f16, f16, f32};
   case MMAIntrinsic::WMMAR3_F16_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F16_16x16x16_F16:
-  // case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
     return {f16, f16, f16};
   case MMAIntrinsic::MFMA_F32_16x16x8_BF16:
   case MMAIntrinsic::MFMA_F32_32x32x4_BF16:
@@ -145,21 +143,6 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
     return {i8, i8, i32};
   }
   assert(false && "unexpected enum value");
-  return {};
-}
-
-/// Returns the MNK shape for an intrinsic without an implemented concrete
-/// layout.
-static std::tuple<int64_t, int64_t, int64_t>
-getUnsupportedMNKShape(MMAIntrinsic intrinsic) {
-  switch (intrinsic) {
-  // case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
-  // case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
-  //   return {16, 16, 16};
-  default:
-    assert(false && "unexpected enum value");
-    return {};
-  }
   return {};
 }
 
@@ -359,9 +342,6 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
       return {/*outer=*/{2, 1}, /*thread=*/{8, 4}, /*strides=*/{4, 1},
               /*element=*/{1, 2}};
     }
-  // case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
-  // case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
-  //   return {};
   }
   assert(false && "unexpected enum value");
   return {};
@@ -394,17 +374,17 @@ struct OpaqueMmaLayout {
 
 static std::tuple<int64_t, int64_t, int64_t>
 getMNKShapeFromIntrinsic(MMAIntrinsic intrinsic) {
-  if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
-    return {16,8,16};
-  }
-  if (is_AMD(intrinsic)) {
+  // if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+  //   return {16,8,16};
+  // }
+  // if (is_AMD(intrinsic)) {
     auto lhs = getSingleSubgroupLayout(intrinsic, MMAFragment::Lhs);
     auto rhs = getSingleSubgroupLayout(intrinsic, MMAFragment::Rhs);
     return {lhs.outer[0] * lhs.thread[0] * lhs.element[0],
             rhs.outer[1] * rhs.thread[1] * rhs.element[1],
             lhs.outer[1] * lhs.thread[1] * lhs.element[1]};
-  }
-  return getUnsupportedMNKShape(intrinsic);
+  // }
+  // return getUnsupportedMNKShape(intrinsic);
 }
 
 int64_t getMSize(MMAIntrinsic intrinsic) {
@@ -496,15 +476,6 @@ int64_t MMAAttr::getSubgroupSize() const {
 }
 
 FailureOr<IREE::GPU::MMAScope> MMAAttr::getMmaScope() const {
-  // Explicit distribution currently unsupported for NV intrinsics.
-  MMAIntrinsic intrinsic = getIntrinsic();
-  if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
-    return IREE::GPU::MMAScope::Subgroup;
-  }
-  // if (intrinsic == MMAIntrinsic::NV_WMMA_F16_16x16x16_F16 ||
-  //     intrinsic == MMAIntrinsic::NV_WMMA_F32_16x16x16_F16) {
-  //   return failure();
-  // }
   return IREE::GPU::MMAScope::Subgroup;
 }
 
@@ -554,12 +525,14 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
         .getResult();
   }
   if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+
+    // reorder register tile from row to column major
+    // doing this here seems wrong?
     auto vec8f16  = VectorType::get({8}, builder.getF16Type());
-    auto a1d      = builder.create<vector::ShapeCastOp>(loc, vec8f16, lhs);
-    SmallVector<int64_t> aMask = {/*0*/0, /*1*/1, /*4*/4, /*5*/5,
-                                  /*2*/2, /*3*/3, /*6*/6, /*7*/7};
-    auto a1dShuf  = builder.create<vector::ShuffleOp>(loc, a1d, a1d, aMask);
-    lhs           = builder.create<vector::ShapeCastOp>(loc, lhs.getType(), a1dShuf);
+    auto flatVector      = builder.create<vector::ShapeCastOp>(loc, vec8f16, lhs);
+    SmallVector<int64_t> indices = {0, 1, 4, 5, 2, 3, 6, 7};
+    auto reordered  = builder.create<vector::ShuffleOp>(loc, flatVector, flatVector, indices);
+    lhs           = builder.create<vector::ShapeCastOp>(loc, lhs.getType(), reordered);
     SmallVector<Attribute> mmaShape {
       builder.getI64IntegerAttr(layout.mSize),
           builder.getI64IntegerAttr(layout.nSize),

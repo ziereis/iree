@@ -533,6 +533,7 @@ const WgpDetails *getAmpereWgpDetails() {
 
 const WgpDetails *getTuringWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
+      MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16
   };
   static const WgpDetails turingWgp = {allComputeBits,
                                        allStorageBits,
@@ -550,6 +551,7 @@ const WgpDetails *getTuringWgpDetails() {
 
 const WgpDetails *getVoltaWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
+      MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16
   };
   // clang-format off
   static const WgpDetails voltaWgp = {
