@@ -525,14 +525,17 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
         .getResult();
   }
   if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
-
-    // reorder register tile from row to column major
-    // doing this here seems wrong?
-    auto vec8f16  = VectorType::get({8}, builder.getF16Type());
-    auto flatVector      = builder.create<vector::ShapeCastOp>(loc, vec8f16, lhs);
-    SmallVector<int64_t> indices = {0, 1, 4, 5, 2, 3, 6, 7};
-    auto reordered  = builder.create<vector::ShuffleOp>(loc, flatVector, flatVector, indices);
-    lhs           = builder.create<vector::ShapeCastOp>(loc, lhs.getType(), reordered);
+    // here we want to transpose the two outer dimension to correctly
+    // model the column major register ordering the op expects
+    // for whatever reason the input is shaped 2x2x1x2 for the 
+    // VectorDistribution pipeline and 2x1x2x2 for the TileAndFusePipeline
+    // so i remove the unit dim here to make the transpose easier
+    auto nonUnitVecType = VectorType::get({2,2,2}, builder.getF16Type());
+    auto reshaped = builder.create<vector::ShapeCastOp>(loc, nonUnitVecType, lhs);
+    auto permAttr = builder.getDenseI64ArrayAttr({1, 0, 2});
+    auto transposed = builder.create<vector::TransposeOp>(
+        loc, nonUnitVecType, reshaped, permAttr);
+    lhs = builder.create<vector::ShapeCastOp>(loc, lhs.getType(), transposed);
     SmallVector<Attribute> mmaShape {
       builder.getI64IntegerAttr(layout.mSize),
           builder.getI64IntegerAttr(layout.nSize),

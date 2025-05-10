@@ -280,6 +280,14 @@ public:
                                 PatternRewriter &rewriter) const override {
     if (!IREE::Flow::isNonNullAndOutsideDispatch(namedOp)) {
       return failure();
+    }    // Get the types of both operands
+    //
+    Type firstType = namedOp->getOpOperand(0).get().getType();
+    Type secondType = namedOp->getOpOperand(1).get().getType();
+
+    // Check if both operands have the same type
+    if (firstType != secondType) {
+      return failure();
     }
 
     // Look for a producer of the given operand that does an elementwise extend
