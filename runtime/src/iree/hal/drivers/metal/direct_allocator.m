@@ -238,6 +238,16 @@ static iree_status_t iree_hal_metal_allocator_allocate_buffer(
     iree_hal_allocator_t* IREE_RESTRICT base_allocator,
     const iree_hal_buffer_params_t* IREE_RESTRICT params, iree_device_size_t allocation_size,
     iree_hal_buffer_t** IREE_RESTRICT out_buffer) {
+  printf("iree_hal_metal_allocator_allocate_buffer\n");
+  iree_bitfield_string_temp_t temp_type, temp_usage;
+  printf("allocating metal buffer with params: type=%.*s, usage=%.*s, size=%zu\n",
+         (int)iree_hal_memory_type_format(params->type, &temp_type).size,
+         iree_hal_memory_type_format(params->type, &temp_type).data,
+         (int)iree_hal_buffer_usage_format(params->usage, &temp_usage).size,
+         iree_hal_buffer_usage_format(params->usage, &temp_usage).data, (size_t)allocation_size);
+  ((iree_hal_buffer_params_t*)params)->type |= IREE_HAL_MEMORY_TYPE_HOST_VISIBLE;
+  ((iree_hal_buffer_params_t*)params)->usage |= IREE_HAL_BUFFER_USAGE_MAPPING_SCOPED;
+  ((iree_hal_buffer_params_t*)params)->usage |= IREE_HAL_BUFFER_USAGE_MAPPING_PERSISTENT;
   iree_hal_metal_allocator_t* allocator = iree_hal_metal_allocator_cast(base_allocator);
   IREE_TRACE_ZONE_BEGIN(z0);
   IREE_TRACE_ZONE_APPEND_VALUE_I64(z0, allocation_size);

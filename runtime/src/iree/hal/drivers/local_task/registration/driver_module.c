@@ -12,6 +12,7 @@
 #include "iree/base/api.h"
 #include "iree/base/internal/flags.h"
 #include "iree/hal/drivers/local_task/task_driver.h"
+#include "iree/hal/drivers/metal/api.h"
 #include "iree/hal/local/loaders/registration/init.h"
 #include "iree/hal/local/plugins/registration/init.h"
 #include "iree/task/api.h"
@@ -19,6 +20,43 @@
 IREE_FLAG(
     bool, task_abort_on_failure, false,
     "Aborts the program on the first failure within a task system queue.");
+
+iree_status_t create_metal_device(iree_hal_device_t** out_device) {
+  iree_status_t status = iree_ok_status();
+  iree_allocator_t host_allocator = iree_allocator_system();
+
+  iree_hal_driver_t* driver = NULL;
+
+  iree_hal_metal_device_params_t metal_params;
+  iree_hal_metal_device_params_initialize(&metal_params);
+
+  fprintf(stdout, "Creating Metal HAL driver...\n");
+  status = iree_hal_metal_driver_create(iree_make_cstring_view("metal"),
+                                   &metal_params, host_allocator, &driver);
+  if (iree_status_is_ok(status)) {
+    fprintf(stdout, "Metal driver created successfully.\n");
+  } else {
+    fprintf(stderr, "Failed to create Metal driver.\n");
+    return status;
+  }
+
+  iree_hal_device_t* device = NULL;
+  status = iree_hal_driver_create_default_device(driver, host_allocator, &device);
+  if (iree_status_is_ok(status)) {
+    fprintf(stdout, "Metal device created successfully.\n");
+  } else {
+    fprintf(stderr, "Failed to create Metal device.\n");
+    return status;
+  }
+
+  // Device retains its own reference to driver internals. Release our ref.
+  iree_hal_driver_release(driver);
+
+  *out_device = device;
+  return iree_ok_status(); // Explicitly return ok status
+}
+
+
 
 static iree_status_t iree_hal_local_task_driver_factory_enumerate(
     void* self, iree_host_size_t* out_driver_info_count,
@@ -38,6 +76,7 @@ static iree_status_t iree_hal_local_task_driver_factory_enumerate(
 static iree_status_t iree_hal_local_task_driver_factory_try_create(
     void* self, iree_string_view_t driver_name, iree_allocator_t host_allocator,
     iree_hal_driver_t** out_driver) {
+
   if (!iree_string_view_equal(driver_name, IREE_SV("local-task"))) {
     return iree_make_status(IREE_STATUS_UNAVAILABLE,
                             "no driver '%.*s' is provided by this factory",
@@ -73,21 +112,34 @@ static iree_status_t iree_hal_local_task_driver_factory_try_create(
         host_allocator);
   }
 
-  // TODO(benvanik): allow this to be injected to share across drivers.
-  iree_hal_allocator_t* device_allocator = NULL;
+  iree_hal_device_t* metal_device = NULL;
+  status = create_metal_device(&metal_device);
   if (iree_status_is_ok(status)) {
-    status = iree_hal_allocator_create_heap(iree_make_cstring_view("local"),
-                                            host_allocator, host_allocator,
-                                            &device_allocator);
+    fprintf(stdout, "Metal device created successfully.\n");
+  } else {
+    fprintf(stderr, "Failed to create Metal device.\n");
+    return status;
   }
+
+  iree_hal_allocator_t* metal_allocator = iree_hal_device_allocator(metal_device);
+
+  // TODO(benvanik): allow this to be injected to share across drivers.
+  // iree_hal_allocator_t* device_allocator = NULL;
+  // if (iree_status_is_ok(status)) {
+  //   status = iree_hal_allocator_create_heap(iree_make_cstring_view("local"),
+  //                                           host_allocator, host_allocator,
+  //                                           &device_allocator);
+  // }
 
   // Create a task driver that will use the given executors for scheduling work
   // and loaders for loading executables.
   if (iree_status_is_ok(status)) {
     status = iree_hal_task_driver_create(
         driver_name, &default_params, executor_count, executors, loader_count,
-        loaders, device_allocator, host_allocator, out_driver);
+        loaders, metal_allocator, host_allocator, out_driver);
   }
+
+
 
   for (iree_host_size_t i = 0; i < executor_count; ++i) {
     iree_task_executor_release(executors[i]);
@@ -96,7 +148,7 @@ static iree_status_t iree_hal_local_task_driver_factory_try_create(
     iree_hal_executable_loader_release(loaders[i]);
   }
   iree_hal_executable_plugin_manager_release(plugin_manager);
-  iree_hal_allocator_release(device_allocator);
+  iree_hal_allocator_release(metal_allocator);
   return status;
 }
 
