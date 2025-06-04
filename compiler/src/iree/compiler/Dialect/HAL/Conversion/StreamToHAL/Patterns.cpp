@@ -99,26 +99,23 @@ struct ResourceAllocOpPattern
     auto bufferType = rewriter.getType<IREE::HAL::BufferType>();
     auto resourceType =
         cast<IREE::Stream::ResourceType>(allocOp.getResult().getType());
-    auto memoryTypes = IREE::HAL::MemoryTypeBitfield::None;
-    auto bufferUsage = IREE::HAL::BufferUsageBitfield::None;
-    if (failed(deriveAllowedResourceBufferBits(allocOp.getLoc(), resourceType,
-                                               memoryTypes, bufferUsage))) {
-      return failure();
-    }
 
-    auto memoryTypeOp =
-        rewriter.create<IREE::HAL::MemoryTypeOp>(allocOp.getLoc(), memoryTypes);
-    auto bufferUsageOp = rewriter.create<IREE::HAL::BufferUsageOp>(
-        allocOp.getLoc(), bufferUsage);
+    auto resolveOp =
+        rewriter.create<IREE::HAL::AllocatorResolveMemoryPropertiesOp>(
+            allocOp.getLoc(), rewriter.getI32Type(), rewriter.getI32Type(),
+            allocOp.getAffinity().value_or(nullptr),
+            resourceType.getLifetime());
 
     // Lookup the appropriate allocator/queue for allocation based on the buffer
     // propreties.
     auto [allocator, queueAffinity] = lookupAllocatorAndQueueAffinityFor(
-        allocOp, memoryTypeOp.getResult(), bufferUsageOp.getResult(), rewriter);
+        allocOp, resolveOp.getMemoryTypes(), resolveOp.getBufferUsage(),
+        rewriter);
 
     rewriter.replaceOpWithNewOp<IREE::HAL::AllocatorAllocateOp>(
-        allocOp, bufferType, allocator, queueAffinity, memoryTypeOp,
-        bufferUsageOp, adaptor.getStorageSize());
+        allocOp, bufferType, allocator, queueAffinity,
+        resolveOp.getMemoryTypes(), resolveOp.getBufferUsage(),
+        adaptor.getStorageSize());
     return success();
   }
 };
@@ -134,23 +131,19 @@ struct ResourceAllocaOpPattern
     // Derive buffer propreties from the resource type.
     auto resourceType =
         cast<IREE::Stream::ResourceType>(allocaOp.getResult().getType());
-    auto memoryTypes = IREE::HAL::MemoryTypeBitfield::None;
-    auto bufferUsage = IREE::HAL::BufferUsageBitfield::None;
-    if (failed(deriveAllowedResourceBufferBits(loc, resourceType, memoryTypes,
-                                               bufferUsage))) {
-      return failure();
-    }
     auto bufferType = rewriter.getType<IREE::HAL::BufferType>();
-    auto memoryTypeOp =
-        rewriter.create<IREE::HAL::MemoryTypeOp>(loc, memoryTypes);
-    auto bufferUsageOp =
-        rewriter.create<IREE::HAL::BufferUsageOp>(loc, bufferUsage);
 
     // Lookup the appropriate device/queue for allocation based on the buffer
     // propreties.
+    auto resolveOp =
+        rewriter.create<IREE::HAL::AllocatorResolveMemoryPropertiesOp>(
+            loc, rewriter.getI32Type(), rewriter.getI32Type(),
+            allocaOp.getAffinity().value_or(nullptr),
+            resourceType.getLifetime());
+
     auto [device, queueAffinity] =
-        lookupDeviceAndQueueAffinityFor(allocaOp, memoryTypeOp.getResult(),
-                                        bufferUsageOp.getResult(), rewriter);
+        lookupDeviceAndQueueAffinityFor(allocaOp, resolveOp.getMemoryTypes(),
+                                        resolveOp.getBufferUsage(), rewriter);
 
     // Behavior flags.
     IREE::HAL::AllocaFlagBitfield flags = IREE::HAL::AllocaFlagBitfield::None;
@@ -168,7 +161,8 @@ struct ResourceAllocaOpPattern
     auto pool = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
     auto allocateOp = rewriter.create<IREE::HAL::DeviceQueueAllocaOp>(
         loc, bufferType, device, queueAffinity, waitFence, signalFence, pool,
-        memoryTypeOp, bufferUsageOp, adaptor.getStorageSize(), flags);
+        resolveOp.getMemoryTypes(), resolveOp.getBufferUsage(),
+        adaptor.getStorageSize(), flags);
 
     rewriter.replaceOp(allocaOp, {allocateOp.getResult(), signalFence});
     return success();
@@ -189,22 +183,16 @@ struct ResourceDeallocaOpPattern
     // prefer-origin mode.
     auto resourceType =
         cast<IREE::Stream::ResourceType>(deallocaOp.getOperand().getType());
-    auto memoryTypes = IREE::HAL::MemoryTypeBitfield::None;
-    auto bufferUsage = IREE::HAL::BufferUsageBitfield::None;
-    bool preferOrigin = deallocaOp.getPreferOrigin();
-    if (failed(deriveAllowedResourceBufferBits(loc, resourceType, memoryTypes,
-                                               bufferUsage))) {
-      preferOrigin = true;
-    }
 
-    auto memoryTypeOp =
-        rewriter.create<IREE::HAL::MemoryTypeOp>(loc, memoryTypes);
-    auto bufferUsageOp =
-        rewriter.create<IREE::HAL::BufferUsageOp>(loc, bufferUsage);
+    auto resolveOp =
+        rewriter.create<IREE::HAL::AllocatorResolveMemoryPropertiesOp>(
+            loc, rewriter.getI32Type(), rewriter.getI32Type(),
+            deallocaOp.getAffinity().value_or(nullptr),
+            resourceType.getLifetime());
 
     auto [device, queueAffinity] =
-        lookupDeviceAndQueueAffinityFor(deallocaOp, memoryTypeOp.getResult(),
-                                        bufferUsageOp.getResult(), rewriter);
+        lookupDeviceAndQueueAffinityFor(deallocaOp, resolveOp.getMemoryTypes(),
+                                        resolveOp.getBufferUsage(), rewriter);
 
     // Gather wait/signal fence, which are optional.
     Value waitFence =
@@ -212,6 +200,7 @@ struct ResourceDeallocaOpPattern
     Value signalFence = getOrCreateSignalFence(
         loc, device, deallocaOp.getResultTimepoint(), rewriter);
 
+    bool preferOrigin = deallocaOp.getPreferOrigin();
     // Route to the origin of the allocation (if available).
     IREE::HAL::DeallocaFlagBitfield flags =
         IREE::HAL::DeallocaFlagBitfield::None;
@@ -471,8 +460,8 @@ buildStorageAssertions(Location loc, Value buffer, StringAttr message,
                        OpBuilder &builder) {
   auto memoryTypes = IREE::HAL::MemoryTypeBitfield::None;
   auto bufferUsage = IREE::HAL::BufferUsageBitfield::None;
-  if (failed(deriveRequiredResourceBufferBits(loc, resourceType, memoryTypes,
-                                              bufferUsage))) {
+  if (failed(deriveRequiredResourceBufferBits(loc, resourceType.getLifetime(),
+                                              memoryTypes, bufferUsage))) {
     return failure();
   }
 
