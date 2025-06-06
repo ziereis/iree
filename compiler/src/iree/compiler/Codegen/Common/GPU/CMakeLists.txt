@@ -67,6 +67,7 @@ iree_cc_library(
     "GPUGeneralizeNamedOps.cpp"
     "GPUGreedilyDistributeToThreads.cpp"
     "GPUInferMemorySpace.cpp"
+    "GPULowerToGlobalLoads.cpp"
     "GPULowerToUKernels.cpp"
     "GPUMultiBuffering.cpp"
     "GPUNestedLayoutDistributionPatterns.cpp"
@@ -93,6 +94,7 @@ iree_cc_library(
     ::PassesIncGen
     LLVMSupport
     MLIRAMDGPUDialect
+    MLIRAMDGPUUtils
     MLIRAffineDialect
     MLIRAffineTransforms
     MLIRAffineUtils
@@ -116,6 +118,7 @@ iree_cc_library(
     MLIRLoopLikeInterface
     MLIRMemRefDialect
     MLIRMemRefTransforms
+    MLIRMemRefUtils
     MLIRNVGPUDialect
     MLIRPass
     MLIRRewrite

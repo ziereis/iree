@@ -384,7 +384,9 @@ bool isGatherlikeOp(Operation *op) {
     }
     return currOp->getBlock() == genericOp.getBody();
   };
-  mlir::getBackwardSlice(yieldOp.getOperand(0), &sliceOps, options);
+  [[maybe_unused]] LogicalResult result =
+      getBackwardSlice(yieldOp.getOperand(0), &sliceOps, options);
+  assert(result.succeeded());
   return hasTensorExtract;
 }
 
@@ -425,13 +427,6 @@ getIGEMMGenericConvDetails(linalg::LinalgOp linalgOp) {
   if (!filterType.hasStaticShape() || !inputType.hasStaticShape()) {
     LDBG("[unimplemented] expected 'filterType' and 'inputType' to have static "
          "shapes.");
-    return failure();
-  }
-
-  // TODO: Support dilation.
-  if (!hasAllOneValues(convDims.dilations)) {
-    LDBG("[unimplemented] expected no dilations (expected dilations to all be "
-         "one).");
     return failure();
   }
 

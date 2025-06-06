@@ -577,7 +577,10 @@ def HAL_ExecutableTargetAttr :
     // This will recursively walk parent operations until one with the
     // `hal.executable.target` attribute is found or a `hal.executable.variant`
     // specifies a value. Returns nullptr if no target specification can be found.
-    static IREE::HAL::ExecutableTargetAttr lookup(Operation *op);
+    //
+    // If present, sets |annotationSite| to the operation where the target
+    // configuration was found.
+    static IREE::HAL::ExecutableTargetAttr lookup(Operation *op, Operation **annotationSite = nullptr);
   }];
 
   let hasCustomAssemblyFormat = 1;
@@ -1004,7 +1007,7 @@ def HAL_DevicePromiseAttr : AttrDef<HAL_Dialect, "DevicePromise", [
   }];
 
   let parameters = (ins
-    AttrParameter<"StringAttr", "">:$device,
+    AttrParameter<"SymbolRefAttr", "">:$device,
     AttrParameter<"int64_t", "">:$queue_mask
   );
 

@@ -165,6 +165,18 @@ def MaterializeCopyOnWritePass :
   ];
 }
 
+def ElideTransferOpsPass :
+    Pass<"iree-stream-elide-transfer-ops", "mlir::ModuleOp"> {
+  let summary = "Elides transfer ops when they the topology allows (no transfer required)";
+  let description = [{
+    Elides all transfer ops that are between device links that do not
+    require tansfers and do not change the lifetime of the resource.
+  }];
+  let dependentDialects = [
+    "IREE::Stream::StreamDialect",
+  ];
+}
+
 def MaterializeEncodingsPass :
     Pass<"iree-stream-materialize-encodings", "mlir::ModuleOp"> {
   let summary = "Materialize stream.tensor.encode ops to dispatches and executables.";
@@ -542,8 +554,7 @@ def SpecializeEncodingsPass :
     - The binding types have to implement IREE::Encoding::EncodingTypeInterface,
       so it can updates the types without accessing any other dialects.
     - All the encodings attached on the types have to implement
-      SerializableEncodingAttrInterface. Because the pass updates the encodings
-      using interfaces.
+      SerializableAttr. Because the pass updates the encodings using interfaces.
   }];
   let dependentDialects = [
     "IREE::Encoding::IREEEncodingDialect"
