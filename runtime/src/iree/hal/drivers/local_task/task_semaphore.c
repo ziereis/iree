@@ -221,6 +221,14 @@ typedef struct iree_hal_task_semaphore_wait_cmd_t {
   iree_hal_task_timepoint_t timepoint;
 } iree_hal_task_semaphore_wait_cmd_t;
 
+typedef struct iree_hal_task_external_timepoint_wait_cmd_t {
+  iree_task_wait_t task;
+  iree_hal_semaphore_t* semaphore;
+  uint64_t value;
+  iree_hal_external_timepoint_t timepoint;
+} iree_hal_task_external_timepoint_wait_cmd_t;
+
+
 // Cleans up a wait task by returning the event used to the pool and - if the
 // task failed - ensuring we scrub it from the timepoint list.
 static void iree_hal_task_semaphore_wait_cmd_cleanup(
@@ -235,6 +243,23 @@ static void iree_hal_task_semaphore_wait_cmd_cleanup(
   }
   iree_event_pool_release(cmd->semaphore->event_pool, 1, &cmd->timepoint.event);
   iree_hal_semaphore_release((iree_hal_semaphore_t*)cmd->semaphore);
+}
+
+// Cleans up an external wait task by releasing the semaphore and cleaning up
+// the exported timepoint if needed.
+static void iree_hal_task_queue_external_wait_cmd_cleanup(
+    iree_task_t* task, iree_status_code_t status_code) {
+  iree_hal_task_external_timepoint_wait_cmd_t* cmd =
+      (iree_hal_task_external_timepoint_wait_cmd_t*)task;
+  if (IREE_UNLIKELY(status_code != IREE_STATUS_OK)) {
+    // Abort the timepoint. Note that this is not designed to be fast as
+    // semaphore failure is an exceptional case.
+    iree_hal_semaphore_cancel_timepoint(&cmd->semaphore,
+                                        &cmd->timepoint);
+  }
+  // Release the semaphore
+  iree_hal_semaphore_release(cmd->semaphore);
+
 }
 
 iree_status_t iree_hal_task_semaphore_enqueue_timepoint(
@@ -331,6 +356,17 @@ iree_status_t iree_hal_task_semaphore_multi_wait(
     // Fast-path for a single semaphore.
     return iree_hal_semaphore_wait(semaphore_list.semaphores[0],
                                    semaphore_list.payload_values[0], timeout);
+  }
+  bool has_external = false;
+  for (iree_host_size_t i = 0; i < semaphore_list.count; ++i) {
+    if (!iree_hal_task_semaphore_isa(semaphore_list.semaphores[i])) {
+      has_external = true;
+      break;
+    }
+  }
+  if (has_external) {
+    printf("HAS EXTERNAL\n");
+    return iree_hal_semaphore_list_wait(semaphore_list, timeout);
   }
 
   IREE_TRACE_ZONE_BEGIN(z0);

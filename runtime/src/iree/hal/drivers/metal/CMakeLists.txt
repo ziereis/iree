@@ -37,6 +37,7 @@ iree_cc_library(
     iree::base::internal
     iree::base::internal::arena
     iree::base::internal::flatcc::parsing
+    iree::base::internal::wait_handle
     iree::hal
     iree::hal::drivers::metal::builtin
     iree::hal::utils::deferred_command_buffer

@@ -87,7 +87,9 @@ static bool tryAddSharedUsageBits(IREE::HAL::DeviceTopologyAttr topology,
   // check if any device has transparent access to all other devices
   for (auto affinity : optimalAttr.getAffinities()) {
     if (hasTransparentAccessToAll(topology, affinity, optimalAttr)) {
-      bufferUsage = bufferUsage | IREE::HAL::BufferUsageBitfield::Mapping;
+      bufferUsage = bufferUsage | IREE::HAL::BufferUsageBitfield::MappingPersistent;
+      // bufferUsage = bufferUsage | IREE::HAL::BufferUsageBitfield::Mapping;
+      memoryTypes = memoryTypes | IREE::HAL::MemoryTypeBitfield::HostVisible;
       return true;
     }
   }
