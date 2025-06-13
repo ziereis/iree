@@ -41,12 +41,16 @@ static bool allReferToSameDevice(DeviceOptimalAttr optimalAttr,
                                                allPossibleTargets);
   }
 
-  auto mappedRange = llvm::map_range(
-      allPossibleTargets,
-      [&](IREE::HAL::DeviceTargetAttr target) { return target.getDeviceID(); });
-  SetVector<StringAttr> allDeviceIDs(mappedRange.begin(), mappedRange.end());
-
-  return allDeviceIDs.size() == 1;
+  if (allPossibleTargets.empty()) {
+    return false;
+  }
+  StringAttr firstDeviceId = allPossibleTargets.front().getDeviceID();
+  for (IREE::HAL::DeviceTargetAttr target : allPossibleTargets) {
+      if (firstDeviceId != target.getDeviceID()) {
+          return false;
+      }
+  }
+  return true;
 }
 
 // Checks if the given device has transparent access to all other devices

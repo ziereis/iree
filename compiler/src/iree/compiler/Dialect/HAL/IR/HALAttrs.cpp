@@ -1137,11 +1137,10 @@ bool DeviceTopologyAttr::hasUnifiedMemory(
   Attribute sourceDevice = getAffinityDevice(source);
   Attribute targetDevice = getAffinityDevice(target);
 
-  // Same device has unified memory
   if (!sourceDevice || !targetDevice)
     return false;
   if (sourceDevice == targetDevice)
-    return true;
+    return true;  // Same device has unified memory
 
   // Search for a matching link and check if it has unified memory
   for (DeviceLinkAttr link : getLinks()) {
