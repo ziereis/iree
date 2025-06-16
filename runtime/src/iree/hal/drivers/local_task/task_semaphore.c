@@ -13,6 +13,7 @@
 
 #include "iree/base/internal/synchronization.h"
 #include "iree/base/internal/wait_handle.h"
+#include "iree/hal/utils/external_timepoint_poller.h"
 #include "iree/hal/utils/semaphore_base.h"
 
 //===----------------------------------------------------------------------===//
@@ -228,7 +229,6 @@ typedef struct iree_hal_task_external_timepoint_wait_cmd_t {
   iree_hal_external_timepoint_t timepoint;
 } iree_hal_task_external_timepoint_wait_cmd_t;
 
-
 // Cleans up a wait task by returning the event used to the pool and - if the
 // task failed - ensuring we scrub it from the timepoint list.
 static void iree_hal_task_semaphore_wait_cmd_cleanup(
@@ -246,59 +246,83 @@ static void iree_hal_task_semaphore_wait_cmd_cleanup(
 }
 
 // Cleans up an external wait task by releasing the semaphore and cleaning up
-// the exported timepoint if needed.
-static void iree_hal_task_queue_external_wait_cmd_cleanup(
+// the external timepoint if needed.
+static void iree_hal_task_external_timepoint_wait_cmd_cleanup(
     iree_task_t* task, iree_status_code_t status_code) {
   iree_hal_task_external_timepoint_wait_cmd_t* cmd =
       (iree_hal_task_external_timepoint_wait_cmd_t*)task;
   if (IREE_UNLIKELY(status_code != IREE_STATUS_OK)) {
     // Abort the timepoint. Note that this is not designed to be fast as
     // semaphore failure is an exceptional case.
-    iree_hal_semaphore_cancel_timepoint(&cmd->semaphore,
-                                        &cmd->timepoint);
+    // TODO: What do do here??
   }
   // Release the semaphore
   iree_hal_semaphore_release(cmd->semaphore);
-
 }
 
 iree_status_t iree_hal_task_semaphore_enqueue_timepoint(
     iree_hal_semaphore_t* base_semaphore, uint64_t minimum_value,
     iree_task_t* issue_task, iree_arena_allocator_t* arena,
     iree_task_submission_t* submission) {
-  iree_hal_task_semaphore_t* semaphore =
-      iree_hal_task_semaphore_cast(base_semaphore);
-
-  iree_slim_mutex_lock(&semaphore->mutex);
-
   iree_status_t status = iree_ok_status();
-  if (semaphore->current_value >= minimum_value) {
-    // Fast path: already satisfied.
-  } else if (!iree_status_is_ok(semaphore->failure_status)) {
-    // Semaphore failed; can't enqueue timepoints (they'll reject immediately).
-    status = iree_status_clone(semaphore->failure_status);
+  if (iree_hal_task_semaphore_isa(base_semaphore)) {
+    iree_hal_task_semaphore_t* semaphore =
+        iree_hal_task_semaphore_cast(base_semaphore);
+
+    iree_slim_mutex_lock(&semaphore->mutex);
+    if (semaphore->current_value >= minimum_value) {
+      // Fast path: already satisfied.
+    } else if (!iree_status_is_ok(semaphore->failure_status)) {
+      // Semaphore failed; can't enqueue timepoints (they'll reject
+      // immediately).
+      status = iree_status_clone(semaphore->failure_status);
+    } else {
+      // Slow path: acquire a system wait handle and perform a full wait.
+      iree_hal_task_semaphore_wait_cmd_t* cmd = NULL;
+      status = iree_arena_allocate(arena, sizeof(*cmd), (void**)&cmd);
+      if (iree_status_is_ok(status)) {
+        status = iree_hal_task_semaphore_acquire_timepoint(
+            semaphore, minimum_value, iree_infinite_timeout(), &cmd->timepoint);
+      }
+      if (iree_status_is_ok(status)) {
+        iree_task_wait_initialize(issue_task->scope,
+                                  iree_event_await(&cmd->timepoint.event),
+                                  IREE_TIME_INFINITE_FUTURE, &cmd->task);
+        iree_task_set_cleanup_fn(&cmd->task.header,
+                                 iree_hal_task_semaphore_wait_cmd_cleanup);
+        iree_task_set_completion_task(&cmd->task.header, issue_task);
+        cmd->semaphore = semaphore;
+        iree_hal_semaphore_retain(base_semaphore);
+        iree_task_submission_enqueue(submission, &cmd->task.header);
+      }
+    }
+    iree_slim_mutex_unlock(&semaphore->mutex);
   } else {
-    // Slow path: acquire a system wait handle and perform a full wait.
-    iree_hal_task_semaphore_wait_cmd_t* cmd = NULL;
+    iree_hal_task_external_timepoint_wait_cmd_t* cmd = NULL;
     status = iree_arena_allocate(arena, sizeof(*cmd), (void**)&cmd);
     if (iree_status_is_ok(status)) {
-      status = iree_hal_task_semaphore_acquire_timepoint(
-          semaphore, minimum_value, iree_infinite_timeout(), &cmd->timepoint);
+      status = iree_hal_semaphore_export_timepoint(
+          base_semaphore, minimum_value, IREE_HAL_QUEUE_AFFINITY_ANY,
+          IREE_HAL_EXTERNAL_TIMEPOINT_TYPE_WAIT_PRIMITIVE,
+          IREE_HAL_EXTERNAL_TIMEPOINT_FLAG_NONE, &cmd->timepoint);
     }
     if (iree_status_is_ok(status)) {
-      iree_task_wait_initialize(issue_task->scope,
-                                iree_event_await(&cmd->timepoint.event),
-                                IREE_TIME_INFINITE_FUTURE, &cmd->task);
-      iree_task_set_cleanup_fn(&cmd->task.header,
-                               iree_hal_task_semaphore_wait_cmd_cleanup);
-      iree_task_set_completion_task(&cmd->task.header, issue_task);
-      cmd->semaphore = semaphore;
+      cmd->semaphore = base_semaphore;
       iree_hal_semaphore_retain(base_semaphore);
+      cmd->value = minimum_value;
+
+      // Convert wait primitive to wait source
+      iree_wait_source_t wait_source;
+      iree_wait_source_import(cmd->timepoint.handle.wait_primitive,
+                              &wait_source);
+      iree_task_wait_initialize(issue_task->scope, wait_source,
+                                IREE_TIME_INFINITE_FUTURE, &cmd->task);
+      iree_task_set_cleanup_fn(
+          &cmd->task.header, iree_hal_task_external_timepoint_wait_cmd_cleanup);
+      iree_task_set_completion_task(&cmd->task.header, issue_task);
       iree_task_submission_enqueue(submission, &cmd->task.header);
     }
   }
-
-  iree_slim_mutex_unlock(&semaphore->mutex);
   return status;
 }
 
@@ -453,15 +477,118 @@ static iree_status_t iree_hal_task_semaphore_import_timepoint(
                           "timepoint import is not yet implemented");
 }
 
+// Structure to hold the event, timepoint, and semaphore for the export callback
+typedef struct iree_hal_task_export_timepoint_data_t {
+  iree_hal_semaphore_timepoint_t timepoint;
+  iree_event_t event;
+  iree_hal_task_semaphore_t* semaphore;
+} iree_hal_task_export_timepoint_data_t;
+
+// Callback for exported timepoints - signals the event and frees the data
+static iree_status_t iree_hal_task_semaphore_export_callback(
+    void* user_data, iree_hal_semaphore_t* semaphore, uint64_t value,
+    iree_status_code_t status_code) {
+  iree_hal_task_export_timepoint_data_t* data =
+      (iree_hal_task_export_timepoint_data_t*)user_data;
+
+  // Signal the exported event
+  iree_event_set(&data->event);
+
+  // Free the data structure (but not the event file descriptor)
+  iree_allocator_free(data->semaphore->host_allocator, data);
+
+  return iree_ok_status();
+}
+
 static iree_status_t iree_hal_task_semaphore_export_timepoint(
     iree_hal_semaphore_t* base_semaphore, uint64_t value,
     iree_hal_queue_affinity_t queue_affinity,
     iree_hal_external_timepoint_type_t requested_type,
     iree_hal_external_timepoint_flags_t requested_flags,
     iree_hal_external_timepoint_t* IREE_RESTRICT out_external_timepoint) {
-  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
-                          "timepoint export is not yet implemented");
+
+  // Clear output structure
+  memset(out_external_timepoint, 0, sizeof(*out_external_timepoint));
+
+  // Only support WAIT_PRIMITIVE type
+  if ((requested_type & IREE_HAL_EXTERNAL_TIMEPOINT_TYPE_WAIT_PRIMITIVE) == 0) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                          "task semaphores only support WAIT_PRIMITIVE export");
+  }
+
+  iree_hal_task_semaphore_t* semaphore = iree_hal_task_semaphore_cast(base_semaphore);
+  IREE_TRACE_ZONE_BEGIN(z0);
+
+  iree_slim_mutex_lock(&semaphore->mutex);
+
+  // Check for failure state
+  if (!iree_status_is_ok(semaphore->failure_status)) {
+    iree_status_t status = iree_status_clone(semaphore->failure_status);
+    iree_slim_mutex_unlock(&semaphore->mutex);
+    IREE_TRACE_ZONE_END(z0);
+    return status;
+  }
+
+  // Check if already signaled
+  if (semaphore->current_value >= value) {
+    iree_slim_mutex_unlock(&semaphore->mutex);
+    // Return immediate wait primitive
+    out_external_timepoint->type = IREE_HAL_EXTERNAL_TIMEPOINT_TYPE_WAIT_PRIMITIVE;
+    out_external_timepoint->flags = requested_flags;
+    out_external_timepoint->compatibility =
+        IREE_HAL_SEMAPHORE_COMPATIBILITY_HOST_WAIT |
+        IREE_HAL_SEMAPHORE_COMPATIBILITY_DEVICE_WAIT;
+    out_external_timepoint->handle.wait_primitive = iree_wait_primitive_immediate();
+    IREE_TRACE_ZONE_END(z0);
+    return iree_ok_status();
+  }
+
+  // Allocate data structure that holds both the event and semaphore reference
+  iree_hal_task_export_timepoint_data_t* data = NULL;
+  iree_status_t status = iree_allocator_malloc(
+      semaphore->host_allocator, sizeof(*data), (void**)&data);
+
+  if (iree_status_is_ok(status)) {
+    data->semaphore = semaphore;
+    // Create a native event
+    status = iree_event_initialize(false, &data->event);
+    if (!iree_status_is_ok(status)) {
+      // Cleanup on error
+      iree_allocator_free(semaphore->host_allocator, data);
+    }
+  }
+
+  if (iree_status_is_ok(status)) {
+    // Initialize and register the timepoint (using the one embedded in data)
+    memset(&data->timepoint, 0, sizeof(data->timepoint));
+
+    iree_hal_semaphore_acquire_timepoint(
+        &semaphore->base, value, iree_infinite_timeout(),
+        (iree_hal_semaphore_callback_t){
+            .fn = iree_hal_task_semaphore_export_callback,
+            .user_data = data,
+        },
+        &data->timepoint);
+
+    // Export the wait primitive - ownership is transferred to caller
+    out_external_timepoint->type = IREE_HAL_EXTERNAL_TIMEPOINT_TYPE_WAIT_PRIMITIVE;
+    out_external_timepoint->flags = requested_flags;
+    out_external_timepoint->compatibility =
+        IREE_HAL_SEMAPHORE_COMPATIBILITY_HOST_WAIT |
+        IREE_HAL_SEMAPHORE_COMPATIBILITY_DEVICE_WAIT;
+    out_external_timepoint->handle.wait_primitive.type = data->event.type;
+    out_external_timepoint->handle.wait_primitive.value = data->event.value;
+
+    // The timepoint and data are now managed by the semaphore system
+    // The data (including event) will be freed by the callback
+  }
+
+  iree_slim_mutex_unlock(&semaphore->mutex);
+
+  IREE_TRACE_ZONE_END(z0);
+  return status;
 }
+
 
 static const iree_hal_semaphore_vtable_t iree_hal_task_semaphore_vtable = {
     .destroy = iree_hal_task_semaphore_destroy,

@@ -42,6 +42,7 @@ iree_cc_library(
     iree::hal::drivers::metal::builtin
     iree::hal::utils::deferred_command_buffer
     iree::hal::utils::executable_debug_info
+    iree::hal::utils::external_timepoint_poller
     iree::hal::utils::file_transfer
     iree::hal::utils::files
     iree::hal::utils::resource_set

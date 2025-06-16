@@ -98,6 +98,22 @@ iree_cc_library(
 
 iree_cc_library(
   NAME
+    external_timepoint_poller
+  HDRS
+    "external_timepoint_poller.h"
+  SRCS
+    "external_timepoint_poller.c"
+  DEPS
+    iree::base
+    iree::base::internal::synchronization
+    iree::base::internal::threading
+    iree::base::internal::wait_handle
+    iree::hal
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
     file_cache
   HDRS
     "file_cache.h"

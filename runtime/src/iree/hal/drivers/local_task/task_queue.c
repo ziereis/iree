@@ -93,20 +93,6 @@ static void iree_hal_semaphore_list_release(iree_hal_semaphore_list_t* list) {
 }
 
 //===----------------------------------------------------------------------===//
-// iree_hal_task_queue_external_wait_cmd_t
-//===----------------------------------------------------------------------===//
-
-// Task to wait on an external semaphore by using exported timepoints.
-typedef struct iree_hal_task_queue_external_wait_cmd_t {
-  iree_task_wait_t task;
-  iree_hal_semaphore_t* semaphore;
-  uint64_t value;
-  iree_hal_external_timepoint_t timepoint;
-} iree_hal_task_queue_external_wait_cmd_t;
-
-
-
-//===----------------------------------------------------------------------===//
 // iree_hal_task_queue_wait_cmd_t
 //===----------------------------------------------------------------------===//
 
@@ -140,47 +126,9 @@ static iree_status_t iree_hal_task_queue_wait_cmd(
   for (iree_host_size_t i = 0; i < cmd->wait_semaphores.count; ++i) {
     iree_hal_semaphore_t* semaphore = cmd->wait_semaphores.semaphores[i];
     uint64_t value = cmd->wait_semaphores.payload_values[i];
-
-    if (iree_hal_task_semaphore_isa(semaphore)) {
-      // Internal semaphore - use existing path
-      status = iree_hal_task_semaphore_enqueue_timepoint(
-          semaphore, value, cmd->task.header.completion_task,
-          cmd->arena, pending_submission);
-    } else {
-      // External semaphore - export timepoint and create wait task
-      iree_hal_task_queue_external_wait_cmd_t* wait_cmd = NULL;
-      status = iree_arena_allocate(cmd->arena, sizeof(*wait_cmd),
-                                 (void**)&wait_cmd);
-      if (iree_status_is_ok(status)) {
-        status = iree_hal_semaphore_export_timepoint(
-            semaphore, value, IREE_HAL_QUEUE_AFFINITY_ANY,
-            IREE_HAL_EXTERNAL_TIMEPOINT_TYPE_WAIT_PRIMITIVE,
-            IREE_HAL_EXTERNAL_TIMEPOINT_FLAG_NONE,
-            &wait_cmd->timepoint);
-      }
-      if (iree_status_is_ok(status)) {
-        wait_cmd->semaphore = semaphore;
-        iree_hal_semaphore_retain(semaphore);
-        wait_cmd->value = value;
-
-        // Convert wait primitive to wait source
-        iree_wait_source_t wait_source;
-        iree_wait_source_import(wait_cmd->timepoint.handle.wait_primitive, &wait_source);
-
-        iree_task_wait_initialize(
-            cmd->task.header.scope,
-            wait_source,
-            IREE_TIME_INFINITE_FUTURE,
-            &wait_cmd->task);
-        iree_task_set_cleanup_fn(&wait_cmd->task.header,
-                               iree_hal_task_queue_external_wait_cmd_cleanup);
-        iree_task_set_completion_task(&wait_cmd->task.header,
-                                    cmd->task.header.completion_task);
-
-        iree_task_submission_enqueue(pending_submission, &wait_cmd->task.header);
-      }
-    }
-
+    status = iree_hal_task_semaphore_enqueue_timepoint(
+        semaphore, value, cmd->task.header.completion_task, cmd->arena,
+        pending_submission);
     if (IREE_UNLIKELY(!iree_status_is_ok(status))) break;
   }
 

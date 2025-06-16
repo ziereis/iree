@@ -408,12 +408,122 @@ static iree_status_t iree_hal_metal_replay_command_buffer(
   return status;
 }
 
+static iree_status_t iree_hal_metal_device_import_external_semaphore(
+    iree_hal_metal_device_t* device, iree_hal_semaphore_t* semaphore, uint64_t value,
+    iree_hal_resource_set_t* resource_set, id<MTLSharedEvent>* out_event,
+    iree_hal_semaphore_t** out_semaphore_to_retain) {
+  IREE_TRACE_ZONE_BEGIN(z0);
+
+  if (iree_hal_metal_shared_event_isa(semaphore)) {
+    printf("DIRECT METAL SEMAPHORE\n");
+    // Direct Metal semaphore - just get the handle
+    *out_event = iree_hal_metal_shared_event_handle(semaphore);
+    *out_semaphore_to_retain = semaphore;
+    IREE_TRACE_ZONE_END(z0);
+    return iree_ok_status();
+  }
+  printf("EXTERNAL SEMAPHORE\n");
+
+  // External semaphore - need to export and import
+  iree_hal_external_timepoint_t external_timepoint;
+  iree_status_t status = iree_hal_semaphore_export_timepoint(
+      semaphore, value, IREE_HAL_QUEUE_AFFINITY_ANY,
+      IREE_HAL_EXTERNAL_TIMEPOINT_TYPE_WAIT_PRIMITIVE,
+      IREE_HAL_EXTERNAL_TIMEPOINT_FLAG_NONE, &external_timepoint);
+
+  if (!iree_status_is_ok(status)) {
+    printf("Error importing timepoint\n");
+    IREE_TRACE_ZONE_END(z0);
+    return status;
+  }
+
+  // Create a new Metal shared event to import the external timepoint
+  iree_hal_semaphore_t* metal_semaphore = NULL;
+  status = iree_hal_metal_shared_event_create(
+      device->device, 0, device->event_listener,
+      device->host_allocator, &metal_semaphore);
+
+  if (!iree_status_is_ok(status)) {
+    IREE_TRACE_ZONE_END(z0);
+    return status;
+  }
+
+  printf("Importing timepoint\n");
+  // Import the external timepoint into the Metal semaphore
+  status = iree_hal_semaphore_import_timepoint(
+      metal_semaphore, value, IREE_HAL_QUEUE_AFFINITY_ANY, external_timepoint);
+
+  if (!iree_status_is_ok(status)) {
+    iree_hal_semaphore_release(metal_semaphore);
+    IREE_TRACE_ZONE_END(z0);
+    return status;
+  }
+
+  *out_event = iree_hal_metal_shared_event_handle(metal_semaphore);
+  *out_semaphore_to_retain = metal_semaphore;
+
+  // Add to resource set to keep it alive
+  status = iree_hal_resource_set_insert(resource_set, 1, &metal_semaphore);
+
+  // Release our reference (it's retained in the resource set)
+  iree_hal_semaphore_release(metal_semaphore);
+
+  IREE_TRACE_ZONE_END(z0);
+  return status;
+}
+
+
+// Refactored wait function using the helper
+static iree_status_t iree_hal_metal_device_queue_semaphore_wait(
+    iree_hal_metal_device_t* device, id<MTLCommandBuffer> command_buffer,
+    iree_hal_semaphore_t* semaphore, uint64_t value,
+    iree_hal_resource_set_t* resource_set) {
+  IREE_TRACE_ZONE_BEGIN(z0);
+
+  id<MTLSharedEvent> event_to_wait_on = nil;
+  iree_hal_semaphore_t* semaphore_to_retain = NULL;
+
+  iree_status_t status = iree_hal_metal_device_import_external_semaphore(
+      device, semaphore, value, resource_set, &event_to_wait_on, &semaphore_to_retain);
+
+  if (iree_status_is_ok(status)) {
+    // Encode the wait on the Metal event
+    [command_buffer encodeWaitForEvent:event_to_wait_on value:value];
+  }
+
+  IREE_TRACE_ZONE_END(z0);
+  return status;
+}
+
+// Signal function for semaphores (Metal or external)
+static iree_status_t iree_hal_metal_device_queue_semaphore_signal(
+    iree_hal_metal_device_t* device, id<MTLCommandBuffer> command_buffer,
+    iree_hal_semaphore_t* semaphore, uint64_t value,
+    iree_hal_resource_set_t* resource_set) {
+  IREE_TRACE_ZONE_BEGIN(z0);
+
+  id<MTLSharedEvent> event_to_signal = nil;
+  iree_hal_semaphore_t* semaphore_to_retain = NULL;
+
+  iree_status_t status = iree_hal_metal_device_import_external_semaphore(
+      device, semaphore, value, resource_set, &event_to_signal, &semaphore_to_retain);
+
+  if (iree_status_is_ok(status)) {
+    // Encode the signal on the Metal event
+    [command_buffer encodeSignalEvent:event_to_signal value:value];
+  }
+
+  IREE_TRACE_ZONE_END(z0);
+  return status;
+}
+
 static iree_status_t iree_hal_metal_device_queue_execute(
     iree_hal_device_t* base_device, iree_hal_queue_affinity_t queue_affinity,
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
     iree_hal_command_buffer_t* command_buffer, iree_hal_buffer_binding_table_t binding_table,
     iree_hal_execute_flags_t flags) {
+  printf("CALLED METAL QUEUE EXECUTE\n");
   iree_hal_metal_device_t* device = iree_hal_metal_device_cast(base_device);
   IREE_TRACE_ZONE_BEGIN(z0);
 
@@ -462,11 +572,18 @@ static iree_status_t iree_hal_metal_device_queue_execute(
         id<MTLCommandBuffer> wait_command_buffer = [device->queue
             commandBufferWithDescriptor:device->command_buffer_descriptor];  // autoreleased
         for (iree_host_size_t i = 0; i < wait_semaphore_list.count; ++i) {
-          id<MTLSharedEvent> handle =
-              iree_hal_metal_shared_event_handle(wait_semaphore_list.semaphores[i]);
-          [wait_command_buffer encodeWaitForEvent:handle
-                                            value:wait_semaphore_list.payload_values[i]];
+          // id<MTLSharedEvent> handle =
+          // iree_hal_metal_shared_event_handle(wait_semaphore_list.semaphores[i]);
+          // [wait_command_buffer encodeWaitForEvent:handle
+          //                                   value:wait_semaphore_list.payload_values[i]];
+          status = iree_hal_metal_device_queue_semaphore_wait(
+              device, wait_command_buffer, wait_semaphore_list.semaphores[i],
+              wait_semaphore_list.payload_values[i], resource_set);
+          IREE_CHECK_OK(status);
         }
+        // if (iree_status_is_ok(status)) {
+        //   [wait_command_buffer commit];
+        // }
         [wait_command_buffer commit];
       }
 
@@ -490,24 +607,27 @@ static iree_status_t iree_hal_metal_device_queue_execute(
 
       // Finally encode signal commands for all signal semaphores.
       for (iree_host_size_t i = 0; i < signal_semaphore_list.count; ++i) {
-        id<MTLSharedEvent> handle =
-            iree_hal_metal_shared_event_handle(signal_semaphore_list.semaphores[i]);
-        [signal_command_buffer encodeSignalEvent:handle
-                                           value:signal_semaphore_list.payload_values[i]];
+        status = iree_hal_metal_device_queue_semaphore_signal(
+            device, signal_command_buffer, signal_semaphore_list.semaphores[i],
+            signal_semaphore_list.payload_values[i], resource_set);
+        IREE_CHECK_OK(status);
       }
 
-      // We use a resource set to keep track of resources in the above. So here we need to retain
-      // the device to make sure the block pool behind outlives the resource set.
-      iree_hal_device_retain(base_device);
-      [signal_command_buffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-        // Now we can release all retained resources.
-        iree_hal_resource_set_free(resource_set);
-        // And then release the device handle. Note that this must happen separately--if we put the
-        // device itself in the resource set, we can destroy the block pool data structure inside
-        // the device prematurely, before the resource set free procedure done scanning it.
-        iree_hal_device_release(base_device);
-      }];
-      [signal_command_buffer commit];
+      // Only commit if all operations succeeded
+      if (iree_status_is_ok(status)) {
+        // We use a resource set to keep track of resources in the above. So here we need to retain
+        // the device to make sure the block pool behind outlives the resource set.
+        iree_hal_device_retain(base_device);
+        [signal_command_buffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+          // Now we can release all retained resources.
+          iree_hal_resource_set_free(resource_set);
+          // And then release the device handle. Note that this must happen separately--if we put the
+          // device itself in the resource set, we can destroy the block pool data structure inside
+          // the device prematurely, before the resource set free procedure done scanning it.
+          iree_hal_device_release(base_device);
+        }];
+        [signal_command_buffer commit];
+      }
     }
   } else {
     iree_hal_resource_set_free(resource_set);

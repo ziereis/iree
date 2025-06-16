@@ -16,6 +16,7 @@ set(IREE_ALL_CTS_TESTS
   "driver"
   "event"
   "executable_cache"
+  "external_timepoint"
   "file"
   "semaphore"
   "semaphore_submission"
@@ -191,6 +192,20 @@ iree_cc_library(
   DEPS
     ::cts_test_base
     iree::base
+    iree::hal
+    iree::testing::gtest
+  TESTONLY
+)
+
+iree_cc_library(
+  NAME
+    external_timepoint_test_library
+  HDRS
+    "external_timepoint_test.h"
+  DEPS
+    ::cts_test_base
+    iree::base
+    iree::base::internal::wait_handle
     iree::hal
     iree::testing::gtest
   TESTONLY
