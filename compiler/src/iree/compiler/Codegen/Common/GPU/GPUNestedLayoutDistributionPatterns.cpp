@@ -383,43 +383,37 @@ struct DistributeTransferReadToLdMatrix final
       : OpDistributionPattern(context, benefit), threadId(threadId),
         subgroupSize(subgroupSize) {}
 
-  /// Compute ldmatrix indices for LHS (A) operand of m16n8k16.
-  /// Memory address mapping:
-  ///   row = (lane % 8) + (lane / 16) * 8  (0-15)
-  ///   col = ((lane / 8) % 2) * 8          (0 or 8)
-  std::pair<Value, Value> computeLhsLdMatrixIndices(OpBuilder &b, Location loc,
-                                                    Value laneId) const {
+  /// Compute lane-to-row/col mapping based on ldmatrix parameters.
+  /// For x4 non-transpose: row = (lane%8) + (lane/16)*8, col = ((lane/8)%2)*8
+  /// For x2 transpose: row = lane%16, col = 0
+  /// Returns failure for unsupported configurations.
+  FailureOr<std::pair<Value, Value>>
+  computeLdMatrixLaneIndices(OpBuilder &b, Location loc, Value laneId,
+                             const LdMatrixParams &params) const {
     MLIRContext *ctx = b.getContext();
     AffineExpr d0 = b.getAffineDimExpr(0);
 
-    // row = (lane % 8) + (lane / 16) * 8
-    AffineMap rowMap =
-        AffineMap::get(1, 0, d0 % 8 + (d0.floorDiv(16)) * 8, ctx);
-    // col = ((lane / 8) % 2) * 8
-    AffineMap colMap = AffineMap::get(1, 0, (d0.floorDiv(8) % 2) * 8, ctx);
+    AffineMap rowMap, colMap;
+    if (params.numTiles == 4 && !params.transpose) {
+      // x4 non-transpose: 16x16 tile
+      // row = (lane % 8) + (lane / 16) * 8
+      rowMap = AffineMap::get(1, 0, d0 % 8 + (d0.floorDiv(16)) * 8, ctx);
+      // col = ((lane / 8) % 2) * 8
+      colMap = AffineMap::get(1, 0, (d0.floorDiv(8) % 2) * 8, ctx);
+    } else if (params.numTiles == 2 && params.transpose) {
+      // x2 transpose: 16x8 tile
+      // row = lane % 16
+      rowMap = AffineMap::get(1, 0, d0 % 16, ctx);
+      // col = 0
+      colMap = AffineMap::get(1, 0, b.getAffineConstantExpr(0), ctx);
+    } else {
+      // Unsupported configuration
+      return failure();
+    }
 
     Value row = affine::makeComposedAffineApply(b, loc, rowMap, {laneId});
     Value col = affine::makeComposedAffineApply(b, loc, colMap, {laneId});
-
-    return {row, col};
-  }
-
-  /// Compute ldmatrix indices for RHS (B) operand of m16n8k16 (transposed).
-  /// Memory address mapping (with transpose):
-  ///   row = lane % 16  (0-15)
-  ///   col = 0
-  std::pair<Value, Value> computeRhsLdMatrixIndices(OpBuilder &b, Location loc,
-                                                    Value laneId) const {
-    MLIRContext *ctx = b.getContext();
-    AffineExpr d0 = b.getAffineDimExpr(0);
-
-    // row = lane % 16
-    AffineMap rowMap = AffineMap::get(1, 0, d0 % 16, ctx);
-
-    Value row = affine::makeComposedAffineApply(b, loc, rowMap, {laneId});
-    Value col = arith::ConstantIndexOp::create(b, loc, 0);
-
-    return {row, col};
+    return std::pair<Value, Value>{row, col};
   }
 
   LogicalResult matchAndRewrite(vector::TransferReadOp readOp,
@@ -449,29 +443,21 @@ struct DistributeTransferReadToLdMatrix final
       return rewriter.notifyMatchFailure(readOp, "no mma_kind from user");
     }
 
-    // 4. Get layout and infer operand type
+    // 4. Get layout and infer ldmatrix parameters
     NestedLayoutAttr vectorLayout =
         dyn_cast<NestedLayoutAttr>(signature[readOp.getResult()]);
     if (!vectorLayout) {
       return rewriter.notifyMatchFailure(readOp, "non-nested layout");
     }
 
-    int operandIndex = inferMmaOperandIndex(vectorLayout, *mmaKind);
-    if (operandIndex < 0) {
-      LDBG("ldmatrix: could not infer operand index from layout");
-      return rewriter.notifyMatchFailure(readOp,
-                                         "could not infer MMA operand type");
-    }
-
-    // 5. Get ldmatrix parameters
-    auto params = getLdMatrixParams(*mmaKind, operandIndex);
+    auto params = inferLdMatrixParamsFromLayout(vectorLayout, *mmaKind);
     if (!params) {
-      LDBG("ldmatrix: no ldmatrix params for this MMA kind/operand");
+      LDBG("ldmatrix: could not infer ldmatrix params from layout");
       return rewriter.notifyMatchFailure(
-          readOp, "ldmatrix not applicable for this MMA kind");
+          readOp, "ldmatrix not applicable for this layout/MMA kind");
     }
 
-    // 6. Check for unsupported features
+    // 5. Check for unsupported features
     if (readOp.getMask()) {
       LDBG("ldmatrix: masked reads not supported");
       return rewriter.notifyMatchFailure(readOp, "masked reads not supported");
@@ -497,11 +483,15 @@ struct DistributeTransferReadToLdMatrix final
                                          "failed to compute subgroup indices");
     }
 
-    // 7. Compute ldmatrix address based on operand type
-    auto [laneRow, laneCol] =
-        (operandIndex == IREE::GPU::kMMAOperandLhs)
-            ? computeLhsLdMatrixIndices(rewriter, loc, laneId)
-            : computeRhsLdMatrixIndices(rewriter, loc, laneId);
+    // 6. Compute ldmatrix address based on params
+    auto laneIndicesResult =
+        computeLdMatrixLaneIndices(rewriter, loc, laneId, *params);
+    if (failed(laneIndicesResult)) {
+      LDBG("ldmatrix: unsupported ldmatrix configuration");
+      return rewriter.notifyMatchFailure(
+          readOp, "unsupported ldmatrix configuration");
+    }
+    auto [laneRow, laneCol] = *laneIndicesResult;
 
     // 9. Compute the distributed result shape
     SmallVector<int64_t> distShape = vectorLayout.getDistributedShape();

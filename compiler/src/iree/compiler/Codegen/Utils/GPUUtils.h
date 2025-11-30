@@ -191,10 +191,8 @@ bool sharedMemTransposeFilter(AffineMap indexMap);
 
 /// Parameters for emitting nvgpu.ldmatrix ops.
 struct LdMatrixParams {
-  int numTiles;    // Number of 8x8 tiles: 1, 2, or 4
-  bool transpose;  // Use .trans variant for transposed loads
-  int64_t tileM;   // Tile size in M (rows per ldmatrix)
-  int64_t tileK;   // Tile size in K (cols per ldmatrix)
+  int numTiles;   // Number of 8x8 tiles: 1, 2, or 4
+  bool transpose; // Use .trans variant for transposed loads
 };
 
 /// Check if a transfer_read is consumed by a to_layout with mma_kind.
@@ -202,18 +200,11 @@ struct LdMatrixParams {
 std::optional<IREE::GPU::MMAAttr>
 getMmaKindFromUser(vector::TransferReadOp readOp);
 
-/// Infer which MMA operand (LHS/RHS/ACC) this is based on comparing the
-/// nested layout with the expected layouts for the given MMA kind.
-/// Returns kMMAOperandLhs (0), kMMAOperandRhs (1), kMMAOperandAcc (2),
-/// or -1 if unable to determine.
-int inferMmaOperandIndex(IREE::VectorExt::NestedLayoutAttr layout,
-                         IREE::GPU::MMAAttr mmaKind);
-
-/// Get ldmatrix parameters for given MMA kind and operand index.
-/// Returns std::nullopt if ldmatrix is not applicable (e.g., for ACC operand
-/// or unsupported MMA kinds).
-std::optional<LdMatrixParams> getLdMatrixParams(IREE::GPU::MMAAttr mmaKind,
-                                                int operandIndex);
+/// Infer ldmatrix parameters directly from nested layout structure.
+/// Returns std::nullopt if ldmatrix is not applicable.
+std::optional<LdMatrixParams>
+inferLdMatrixParamsFromLayout(IREE::VectorExt::NestedLayoutAttr layout,
+                              IREE::GPU::MMAAttr mmaKind);
 
 //===----------------------------------------------------------------------===//
 // GPU Target Information
