@@ -55,7 +55,7 @@ namespace mlir::iree_compiler {
 llvm::cl::opt<bool> clGPUUseTileAndFuseMatmul(
     "iree-codegen-llvmgpu-use-tile-and-fuse-matmul",
     llvm::cl::desc("test the the tile and fuse pipeline for matmul"),
-    llvm::cl::init(true));
+    llvm::cl::init(false));
 
 llvm::cl::opt<bool> clGPUTestTileAndFuseVectorize(
     "iree-codegen-llvmgpu-test-tile-and-fuse-vectorize",
@@ -1331,11 +1331,6 @@ static LogicalResult
 setVectorDistributionConfig(IREE::GPU::TargetAttr target,
                             mlir::FunctionOpInterface entryPoint,
                             Operation *computeOp) {
-  // We haven't properly plumbed through MMA op layouts and conversions for CUDA
-  // to target NVIDIA GPUs. So disable the vector distribution pass for it.
-  if (!isROCmBackend(target))
-    return failure();
-
   if (!clGPUEnableVectorDistribution) {
     LDBG() << "Vector Distribution not enabled, skipping...";
     return failure();

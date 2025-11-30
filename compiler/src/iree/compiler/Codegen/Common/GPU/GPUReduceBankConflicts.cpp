@@ -58,7 +58,10 @@ static void padAlloc(MLIRContext *context, memref::AllocOp allocOp,
   // load size.
   int64_t paddingSize = paddingSizeBits / bitwidth;
   SmallVector<int64_t> shape = llvm::to_vector(allocOp.getType().getShape());
-  shape.back() = shape.back() + paddingSize;
+  // Ensure 16-byte (128-bit) alignment for ldmatrix compatibility
+  int64_t alignmentElements = 128 / bitwidth;
+  int64_t newSize = shape.back() + paddingSize;
+  shape.back() = llvm::alignTo(newSize, alignmentElements);
   MemRefType allocType =
       MemRefType::get(shape, elType, MemRefLayoutAttrInterface{},
                       allocOp.getType().getMemorySpace());
@@ -139,7 +142,13 @@ static unsigned computeEffectiveExtraBytes(mlir::FunctionOpInterface funcOp,
         bitWidth = IREE::Util::getTypeBitWidth(elemType);
       }
       unsigned elemSize = bitWidth / 8;
-      unsigned extraElements = paddingBits / bitWidth;
+      // Match the aligned padding calculation in padAlloc
+      unsigned paddingElements = paddingBits / bitWidth;
+      unsigned alignmentElements = 128 / bitWidth;
+      int64_t innerDim = shape.back();
+      int64_t newSize = innerDim + paddingElements;
+      int64_t alignedSize = llvm::alignTo(newSize, alignmentElements);
+      unsigned extraElements = alignedSize - innerDim;
 
       totalExtra += outerProduct * extraElements * elemSize;
     }

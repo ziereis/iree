@@ -8,6 +8,7 @@
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
+#include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/Dialect/GPU/TargetUtils/KnownTargets.h"
 #include "iree/compiler/Codegen/Utils/MarkerUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
@@ -963,6 +964,121 @@ bool sharedMemTransposeFilter(AffineMap indexMap) {
     }
   }
   return false;
+}
+
+//===----------------------------------------------------------------------===//
+// ldmatrix support utilities
+//===----------------------------------------------------------------------===//
+
+std::optional<IREE::GPU::MMAAttr>
+getMmaKindFromUser(vector::TransferReadOp readOp) {
+  // Look through users to find a to_layout op with mma_kind
+  for (Operation *user : readOp->getUsers()) {
+    auto toLayoutOp = dyn_cast<IREE::VectorExt::ToLayoutOp>(user);
+    if (!toLayoutOp)
+      continue;
+
+    Attribute mmaKindAttr = toLayoutOp.getMmaKindAttr();
+    if (!mmaKindAttr)
+      continue;
+
+    if (auto mmaAttr = dyn_cast<IREE::GPU::MMAAttr>(mmaKindAttr)) {
+      return mmaAttr;
+    }
+  }
+  return std::nullopt;
+}
+
+int inferMmaOperandIndex(IREE::VectorExt::NestedLayoutAttr layout,
+                         IREE::GPU::MMAAttr mmaKind) {
+  // Get the expected layouts for LHS and RHS from the MMA kind
+  // For now, we compare thread tiles and element tiles to infer operand type.
+  // This is based on how layouts differ between A and B operands.
+
+  // Get the MMA intrinsic's single subgroup layout for each operand
+  auto lhsLayout =
+      IREE::GPU::getSingleSubgroupLayout(mmaKind, IREE::GPU::kMMAOperandLhs);
+  auto rhsLayout =
+      IREE::GPU::getSingleSubgroupLayout(mmaKind, IREE::GPU::kMMAOperandRhs);
+
+  ArrayRef<int64_t> layoutThreadTile = layout.getThreadTile();
+  ArrayRef<int64_t> layoutElementTile = layout.getElementTile();
+
+  // For rank-2 layouts (M x K for LHS, K x N for RHS):
+  if (layoutThreadTile.size() < 2 || layoutElementTile.size() < 2) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: layout rank < 2, cannot infer operand\n");
+    return -1;
+  }
+
+  // Extract the last two dimensions (the MMA tile dimensions)
+  int64_t rank = layoutThreadTile.size();
+  SmallVector<int64_t, 2> threadTile2D = {layoutThreadTile[rank - 2],
+                                          layoutThreadTile[rank - 1]};
+  SmallVector<int64_t, 2> elementTile2D = {layoutElementTile[rank - 2],
+                                           layoutElementTile[rank - 1]};
+
+  // Compare with LHS layout
+  if (threadTile2D[0] == lhsLayout.thread[0] &&
+      threadTile2D[1] == lhsLayout.thread[1] &&
+      elementTile2D[0] == lhsLayout.element[0] &&
+      elementTile2D[1] == lhsLayout.element[1]) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: inferred LHS operand\n");
+    return IREE::GPU::kMMAOperandLhs;
+  }
+
+  // Compare with RHS layout
+  if (threadTile2D[0] == rhsLayout.thread[0] &&
+      threadTile2D[1] == rhsLayout.thread[1] &&
+      elementTile2D[0] == rhsLayout.element[0] &&
+      elementTile2D[1] == rhsLayout.element[1]) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: inferred RHS operand\n");
+    return IREE::GPU::kMMAOperandRhs;
+  }
+
+  LLVM_DEBUG({
+    DBGS() << "ldmatrix: could not match layout to LHS or RHS\n";
+    DBGS() << "  layout thread=" << threadTile2D[0] << "x" << threadTile2D[1]
+           << ", element=" << elementTile2D[0] << "x" << elementTile2D[1]
+           << "\n";
+    DBGS() << "  lhs thread=" << lhsLayout.thread[0] << "x"
+           << lhsLayout.thread[1] << ", element=" << lhsLayout.element[0] << "x"
+           << lhsLayout.element[1] << "\n";
+    DBGS() << "  rhs thread=" << rhsLayout.thread[0] << "x"
+           << rhsLayout.thread[1] << ", element=" << rhsLayout.element[0] << "x"
+           << rhsLayout.element[1] << "\n";
+  });
+  return -1;
+}
+
+std::optional<LdMatrixParams> getLdMatrixParams(IREE::GPU::MMAAttr mmaKind,
+                                                int operandIndex) {
+  // ldmatrix is only for LHS and RHS operands, not ACC
+  if (operandIndex == IREE::GPU::kMMAOperandAcc) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: ACC operand, not using ldmatrix\n");
+    return std::nullopt;
+  }
+
+  // Get the MMA intrinsic type
+  IREE::GPU::MMAIntrinsic intrinsic = mmaKind.getIntrinsic();
+
+  // For now, only support NV_MMA_SYNC_F32_16x8x16_F16
+  // TODO: Add support for other MMA kinds
+  if (intrinsic != IREE::GPU::MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: unsupported MMA intrinsic, only "
+                         "NV_MMA_SYNC_F32_16x8x16_F16 supported\n");
+    return std::nullopt;
+  }
+
+  // NVIDIA mma.sync m16n8k16 with F16
+  // LHS (A): 16x16, uses ldmatrix.x4
+  // RHS (B): 16x8 (stored as K=16 x N=8), uses ldmatrix.x2.trans
+  if (operandIndex == IREE::GPU::kMMAOperandLhs) {
+    return LdMatrixParams{/*numTiles=*/4, /*transpose=*/false,
+                          /*tileM=*/16, /*tileK=*/16};
+  } else {
+    return LdMatrixParams{/*numTiles=*/2, /*transpose=*/true,
+                          /*tileM=*/16, /*tileK=*/8};
+  }
 }
 
 //===----------------------------------------------------------------------===//

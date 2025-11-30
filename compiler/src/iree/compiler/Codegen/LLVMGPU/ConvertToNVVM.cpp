@@ -104,6 +104,7 @@ struct ConvertToNVVMPass final
       vector::populateVectorGatherLoweringPatterns(patterns);
       vector::populateVectorMaskOpLoweringPatterns(patterns);
       vector::populateVectorFromElementsUnrollPatterns(patterns);
+      vector::populateVectorToElementsUnrollPatterns(patterns);
       // We currently always use 64 bit indices, thus ensure the bit width of
       // the mask compare is consistent.
       vector::populateVectorMaskMaterializationPatterns(
@@ -191,6 +192,9 @@ struct ConvertToNVVMPass final
         return signalPassFailure();
       }
     }
+    // 16-byte alignment is required for ldmatrix and other shared memory
+    // instructions on NVIDIA GPUs.
+    setSharedMemoryAlignment(m, 16);
     ConvertToDynamicSharedMemory(m);
   }
 };
