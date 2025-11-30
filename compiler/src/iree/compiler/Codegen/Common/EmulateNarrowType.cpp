@@ -6,6 +6,7 @@
 
 #include "iree/compiler/Codegen/Common/EmulateNarrowType.h"
 #include "iree/compiler/Codegen/Common/Transforms.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -36,7 +37,7 @@ namespace {
 
 struct ConvertHalInterfaceBindingSubspan final
     : OpConversionPattern<IREE::HAL::InterfaceBindingSubspanOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(IREE::HAL::InterfaceBindingSubspanOp op, OpAdaptor adaptor,
@@ -331,7 +332,7 @@ static void nonAtomicRMW(OpBuilder &builder, Location loc,
 // NOTE: By default, all RMW sequences are atomic. Set `disableAtomicRMW` to
 // `false` to generate non-atomic RMW sequences.
 struct IREEConvertVectorStore final : OpConversionPattern<vector::StoreOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   IREEConvertVectorStore(MLIRContext *context, bool disableAtomicRMW,
                          PatternBenefit benefit)
@@ -573,9 +574,10 @@ private:
 struct EmulateNarrowTypePass final
     : impl::EmulateNarrowTypePassBase<EmulateNarrowTypePass> {
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<arith::ArithDialect, func::FuncDialect,
-                    memref::MemRefDialect, vector::VectorDialect,
-                    affine::AffineDialect, IREE::HAL::HALDialect>();
+    registry
+        .insert<arith::ArithDialect, func::FuncDialect, memref::MemRefDialect,
+                vector::VectorDialect, affine::AffineDialect,
+                IREE::Codegen::IREECodegenDialect, IREE::HAL::HALDialect>();
   }
 
   void runOnOperation() override {

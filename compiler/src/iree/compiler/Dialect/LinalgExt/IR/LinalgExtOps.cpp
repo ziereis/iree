@@ -51,7 +51,7 @@ namespace mlir::iree_compiler::IREE::LinalgExt {
 //===----------------------------------------------------------------------===//
 
 static Type getComplexElementTypeOrSelf(Type ty) {
-  if (auto complex = dyn_cast_or_null<ComplexType>(ty)) {
+  if (auto complex = dyn_cast_if_present<ComplexType>(ty)) {
     return complex.getElementType();
   }
   return ty;
@@ -62,14 +62,14 @@ static void getEffectsImpl(
         &effects,
     ArrayRef<OpOperand *> inputOperands, MutableOperandRange outputOperands) {
   for (OpOperand *operand : inputOperands) {
-    if (!llvm::isa<MemRefType>(operand->get().getType())) {
+    if (!isa<MemRefType>(operand->get().getType())) {
       continue;
     }
     effects.emplace_back(MemoryEffects::Read::get(), operand,
                          SideEffects::DefaultResource::get());
   }
   for (OpOperand &operand : outputOperands) {
-    if (!llvm::isa<MemRefType>(operand.get().getType())) {
+    if (!isa<MemRefType>(operand.get().getType())) {
       continue;
     }
     effects.emplace_back(MemoryEffects::Read::get(), &operand,
@@ -96,6 +96,12 @@ static bool isInvalid(ArrayRef<int64_t> dimsPos, int64_t rank) {
   }
   return llvm::any_of(
       dimsPos, [rank](int64_t dimPos) { return dimPos < 0 || dimPos >= rank; });
+}
+
+static bool allIndexingsAreProjectedPermutation(IndexingMapOpInterface op) {
+  return llvm::all_of(op.getIndexingMapsArray(), [](AffineMap m) {
+    return m.isProjectedPermutation(/*allowZeroInResults=*/true);
+  });
 }
 
 /// Emit an error and return failure when `seq` is invalid. It is only valid
@@ -156,9 +162,10 @@ verifyGatherScatter(OpTy op, int64_t sliceRank, ShapedType originalType,
 
   auto indicesType = op.getIndicesType();
   if (indicesType.getRank() < 1 ||
-      !isa<IntegerType>(indicesType.getElementType())) {
+      !(isa<IntegerType>(indicesType.getElementType()) ||
+        indicesType.getElementType().isIndex())) {
     return op->emitOpError("expected indices to be of rank 1 or greater and of "
-                           "integer element type");
+                           "integer or index element type");
   }
 
   ArrayRef<int64_t> dimMap = op.getDimensionMap();
@@ -246,7 +253,7 @@ static void populateMap(OpTy op, MutableArrayRef<OpOperand> operands,
       continue;
     }
     Value src = opOperand.get();
-    auto sourceType = llvm::cast<RankedTensorType>(src.getType());
+    auto sourceType = cast<RankedTensorType>(src.getType());
     auto sourceMap = op.getMatchingIndexingMap(&opOperand);
 
     // Get the `sourceShape` of the `sourceType`. If the operand is a result of
@@ -288,7 +295,7 @@ static void createNewOperandWithStaticSizes(
   if (op.isScalar(opOperand)) {
     return;
   }
-  auto sourceType = llvm::cast<RankedTensorType>(src.getType());
+  auto sourceType = cast<RankedTensorType>(src.getType());
   Type resultType = sourceType;
   ArrayRef<int64_t> sourceShape = sourceType.getShape();
   AffineMap sourceMap = op.getMatchingIndexingMap(opOperand);
@@ -338,9 +345,7 @@ struct StaticizeLinalgExtOp : public OpRewritePattern<OpTy> {
       return failure();
     }
 
-    if (llvm::any_of(op.getIndexingMapsArray(), [](AffineMap map) {
-          return !map.isProjectedPermutation();
-        })) {
+    if (!allIndexingsAreProjectedPermutation(op)) {
       return failure();
     }
 
@@ -498,7 +503,7 @@ SmallVector<AffineMap> GatherOp::getIndexingMapsForResults() {
 namespace {
 struct ConvertGatherToExtract
     : public OpRewritePattern<IREE::LinalgExt::GatherOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(IREE::LinalgExt::GatherOp gatherOp,
                                 PatternRewriter &rewriter) const override {
     // TODO: support memref case.
@@ -649,6 +654,28 @@ LogicalResult MapScatterOp::verify() {
   return success();
 }
 
+Value MapScatterOp::getInputIndex(int64_t position) {
+  Block &body = getTransformationRegion().front();
+  return body.getArguments()[position];
+}
+
+Value MapScatterOp::getOutputIndex(int64_t position) {
+  // It shouldn't be possible to return the mask, the last operand of the yield,
+  // through this function as that's not an index. Therefore, this assert here.
+  assert(position < getOutputRank() &&
+         "The output index position being requested should be smaller than the "
+         "output rank.");
+  Block &body = getTransformationRegion().front();
+  auto yield = cast<IREE::LinalgExt::YieldOp>(body.getTerminator());
+  return yield.getOperand(position);
+}
+
+Value MapScatterOp::getMask() {
+  Block &body = getTransformationRegion().front();
+  auto yield = cast<IREE::LinalgExt::YieldOp>(body.getTerminator());
+  return yield.getOperand(yield.getNumOperands() - 1);
+}
+
 void MapScatterOp::insertTransformationAtStart(
     OpBuilder &builder,
     function_ref<SmallVector<Value>(ArrayRef<BlockArgument>)>
@@ -740,7 +767,7 @@ bool MapScatterOp::isIdentity() {
 namespace {
 struct ConvertIdentityMapScatterToCopy
     : public OpRewritePattern<IREE::LinalgExt::MapScatterOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(IREE::LinalgExt::MapScatterOp mapScatterOp,
                                 PatternRewriter &rewriter) const override {
     if (!mapScatterOp.isIdentity()) {
@@ -862,7 +889,7 @@ namespace {
 /// functionality.
 struct RemoveUnusedSortOpResults
     : public OpRewritePattern<IREE::LinalgExt::SortOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(IREE::LinalgExt::SortOp sortOp,
                                 PatternRewriter &rewriter) const override {
     // To avoid problems in dispatches associated with unused results, prune
@@ -1106,7 +1133,7 @@ LogicalResult TopkOp::verify() {
       block.getArgument(1).getType() != inputValuesType.getElementType()) {
     return op->emitOpError("region block types must match input");
   }
-  auto terminatorOp = llvm::dyn_cast<YieldOp>(block.getTerminator());
+  auto terminatorOp = dyn_cast<YieldOp>(block.getTerminator());
   if (!terminatorOp || !terminatorOp.getOperand(0).getType().isInteger(1)) {
     return op->emitOpError("region block must end with a linalg_ext.yield i1!");
   }
@@ -1121,7 +1148,7 @@ TopkOp::reifyResultShapes(OpBuilder &b,
 }
 
 //===----------------------------------------------------------------------===//
-// ArgmaxOp
+// ArgCompareOp
 //===----------------------------------------------------------------------===//
 
 LogicalResult ArgCompareOp::verify() {
@@ -1218,6 +1245,43 @@ LogicalResult ArgCompareOp::reifyResultShapes(
     OpBuilder &b, ReifiedRankedShapedTypeDims &reifiedReturnShapes) {
   return cast<LinalgExtOp>(getOperation())
       .reifyResultShapes(b, reifiedReturnShapes);
+}
+
+SmallVector<AffineMap> IREE::LinalgExt::ArgCompareOp::getIndexingMapsArray() {
+  MLIRContext *ctx = getContext();
+
+  const int64_t rank = getInputRank();
+  const int64_t redDim = static_cast<int64_t>(getDimension());
+
+  Builder b(ctx);
+  AffineMap inputMap = b.getMultiDimIdentityMap(rank);
+
+  SmallVector<AffineExpr> proj;
+  for (int64_t i = 0; i < rank; ++i) {
+    if (i == redDim) {
+      continue;
+    }
+    proj.push_back(getAffineDimExpr(i, ctx));
+  }
+  AffineMap resultMap = AffineMap::get(rank, 0, proj, ctx);
+  return {inputMap, resultMap, resultMap};
+}
+
+SmallVector<AffineMap>
+IREE::LinalgExt::ArgCompareOp::getIndexingMapsForOperands() {
+  SmallVector<AffineMap> maps = getIndexingMapsArray();
+  maps.resize(getNumDpsInputs() + getNumDpsInits());
+  return maps;
+}
+
+SmallVector<AffineMap>
+IREE::LinalgExt::ArgCompareOp::getIndexingMapsForResults() {
+  return llvm::to_vector_of<AffineMap>(
+      llvm::drop_begin(getIndexingMapsArray(), getNumDpsInputs()));
+}
+
+SmallVector<int64_t> IREE::LinalgExt::ArgCompareOp::getStaticLoopRanges() {
+  return llvm::to_vector(getInputType().getShape());
 }
 
 //===----------------------------------------------------------------------===//
@@ -2224,6 +2288,38 @@ void OnlineAttentionOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 //===----------------------------------------------------------------------===//
+// ExpReductionOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ExpReductionOp::verify() {
+  Operation *op = getOperation();
+
+  for (int64_t reducedOperand : getExpReducedOperands()) {
+    if (reducedOperand == 0) {
+      return op->emitOpError(
+          "operand index in exp_reduced_operands cannot be the 0th operand, it "
+          "always contains the maximum value");
+    }
+    if (reducedOperand >= getNumDpsInits()) {
+      return op->emitOpError("operand index in exp_reduced_operands must index "
+                             "the outs operands ("
+                             "outs has ")
+             << getNumDpsInits() << " operands)";
+    }
+  }
+
+  if (!allIndexingsAreProjectedPermutation(*this)) {
+    return op->emitOpError("all indexing maps must be projected permutations");
+  }
+
+  if (!getBody()->getOps<linalg::IndexOp>().empty()) {
+    return op->emitOpError("linalg.index is not supported in body");
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // Im2colOp
 //===----------------------------------------------------------------------===//
 
@@ -2290,32 +2386,93 @@ void Im2colOp::setMixedMStrides(SmallVector<OpFoldResult> mStrides) {
 }
 
 SmallVector<int64_t> Im2colOp::getBatchOutputDims() {
-  return llvm::to_vector(llvm::seq<int64_t>(0, getBatchPos().size()));
+  SmallVector<int64_t> inverseOutPerm =
+      invertPermutationVector(getOutputPerm());
+  return llvm::map_to_vector(llvm::seq<int64_t>(0, getBatchPos().size()),
+                             [&](int64_t dim) { return inverseOutPerm[dim]; });
 }
 
 SmallVector<int64_t> Im2colOp::getMOutputDims() {
   int64_t begin = getBatchPos().size();
   int64_t end = begin + getMixedMOffset().size();
-  return llvm::to_vector(llvm::seq<int64_t>(begin, end));
+  SmallVector<int64_t> inverseOutPerm =
+      invertPermutationVector(getOutputPerm());
+  return llvm::map_to_vector(llvm::seq<int64_t>(begin, end),
+                             [&](int64_t dim) { return inverseOutPerm[dim]; });
 }
 
 SmallVector<int64_t> Im2colOp::getKOutputDims() {
   int64_t begin = getBatchPos().size() + getMixedMOffset().size();
   int64_t end = begin + getMixedKOffset().size();
-  return llvm::to_vector(llvm::seq<int64_t>(begin, end));
+  SmallVector<int64_t> inverseOutPerm =
+      invertPermutationVector(getOutputPerm());
+  return llvm::map_to_vector(llvm::seq<int64_t>(begin, end),
+                             [&](int64_t dim) { return inverseOutPerm[dim]; });
+}
+
+SmallVector<SmallVector<int64_t>>
+Im2colOp::getInputToOutputDimVectorizationMap() {
+  SetVector<int64_t> batchInputDims(llvm::from_range, getBatchPos());
+  SetVector<int64_t> mInputDims(llvm::from_range, getMPos());
+  SetVector<int64_t> kInputDims(llvm::from_range, getKPos());
+  SmallVector<SmallVector<int64_t>> vectorizationMap;
+  vectorizationMap.resize(getInputRank());
+  SmallVector<int64_t> batchOutputDims = getBatchOutputDims();
+  if (batchInputDims.size() == batchOutputDims.size()) {
+    for (auto [batchInputDim, batchOutputDim] :
+         llvm::zip_equal(batchInputDims, batchOutputDims)) {
+      vectorizationMap[batchInputDim] = {batchOutputDim};
+    }
+  } else {
+    vectorizationMap[batchInputDims.back()].push_back(batchOutputDims.back());
+  }
+  SmallVector<int64_t> mOutputDims = getMOutputDims();
+  if (mInputDims.size() == mOutputDims.size()) {
+    for (auto [mInputDim, mOutputDim] :
+         llvm::zip_equal(mInputDims, mOutputDims)) {
+      vectorizationMap[mInputDim] = {mOutputDim};
+    }
+  } else {
+    vectorizationMap[mInputDims.back()].push_back(mOutputDims.back());
+  }
+  SmallVector<int64_t> kOutputDims = getKOutputDims();
+  // Compute the input dimensions captured by the K output dimensions, in the
+  // order that they appear in kOutputDims. The canonical order for the input
+  // K dims is just the order that they appear in the input tensor. Get the
+  // dims in this order, and then apply the input_k_perm to get the dims in the
+  // order that they are represented in the output tensor.
+  SmallVector<int64_t> orderedKInputDims;
+  for (int64_t dim = 0; dim < getInputRank(); ++dim) {
+    if (batchInputDims.contains(dim)) {
+      continue;
+    }
+    if (kInputDims.contains(dim)) {
+      orderedKInputDims.push_back(dim);
+      continue;
+    }
+    orderedKInputDims.push_back(dim);
+  }
+  applyPermutationToVector(orderedKInputDims, getInputKPerm());
+  if (orderedKInputDims.size() == kOutputDims.size()) {
+    for (auto [kInputDim, kOutputDim] :
+         llvm::zip_equal(orderedKInputDims, kOutputDims)) {
+      vectorizationMap[kInputDim].push_back(kOutputDim);
+    }
+  } else {
+    vectorizationMap[orderedKInputDims.back()].push_back(kOutputDims.back());
+  }
+  return vectorizationMap;
 }
 
 /// Custom builder methods for im2col op.
-void Im2colOp::build(OpBuilder &builder, OperationState &state, Value input,
-                     Value output, ArrayRef<int64_t> strides,
-                     ArrayRef<int64_t> dilations,
-                     ArrayRef<OpFoldResult> kernelSize,
-                     ArrayRef<OpFoldResult> mOffset,
-                     ArrayRef<OpFoldResult> mStrides,
-                     ArrayRef<OpFoldResult> kOffset,
-                     ArrayRef<OpFoldResult> kStrides,
-                     ArrayRef<int64_t> batchPos, ArrayRef<int64_t> mPos,
-                     ArrayRef<int64_t> kPos, ArrayRef<int64_t> inputKPerm) {
+void Im2colOp::build(
+    OpBuilder &builder, OperationState &state, Value input, Value output,
+    ArrayRef<int64_t> strides, ArrayRef<int64_t> dilations,
+    ArrayRef<OpFoldResult> kernelSize, ArrayRef<OpFoldResult> mOffset,
+    ArrayRef<OpFoldResult> mStrides, ArrayRef<OpFoldResult> kOffset,
+    ArrayRef<OpFoldResult> kStrides, ArrayRef<int64_t> batchPos,
+    ArrayRef<int64_t> mPos, ArrayRef<int64_t> kPos,
+    ArrayRef<int64_t> inputKPerm, ArrayRef<int64_t> outputPerm) {
   assert(strides.size() == kernelSize.size() &&
          dilations.size() == kernelSize.size() &&
          mPos.size() == kernelSize.size() &&
@@ -2344,7 +2501,8 @@ void Im2colOp::build(OpBuilder &builder, OperationState &state, Value input,
         builder.getDenseI64ArrayAttr(staticKStrides),
         builder.getDenseI64ArrayAttr(batchPos),
         builder.getDenseI64ArrayAttr(mPos), builder.getDenseI64ArrayAttr(kPos),
-        builder.getDenseI64ArrayAttr(inputKPerm));
+        builder.getDenseI64ArrayAttr(inputKPerm),
+        builder.getDenseI64ArrayAttr(outputPerm));
 }
 
 LogicalResult Im2colOp::verify() {
@@ -2441,12 +2599,22 @@ LogicalResult Im2colOp::verify() {
   // Verify input and output shapes.
   ArrayRef<int64_t> inputShape = inputType.getShape();
   ArrayRef<int64_t> outputShape = outputType.getShape();
+  ArrayRef<int64_t> outputPerm = getOutputPerm();
+  if (!isPermutationVector(outputPerm)) {
+    return op->emitOpError("expected output_perm to be a permutation");
+  }
+  if (outputPerm.size() != outputShape.size()) {
+    return op->emitOpError(
+        "expected output_perm to have the same rank as the result");
+  }
+
   // When the op is tiled, the m and k dimensions of the output are tiled, but
   // they are not tiled in the input, so we cannot verify the output size of
   // these dimensions. Only verify the shape of the batch dimensions.
   SmallVector<int64_t> expectedOutputShape(outputShape);
+  SmallVector<int64_t> inverseOutputPerm = invertPermutationVector(outputPerm);
   for (auto [idx, pos] : llvm::enumerate(batchPos)) {
-    expectedOutputShape[idx] = inputShape[pos];
+    expectedOutputShape[inverseOutputPerm[idx]] = inputShape[pos];
   }
   if (failed(verifyCompatibleShape(expectedOutputShape, outputShape))) {
     return op->emitOpError("incompatible output shape");
@@ -2678,6 +2846,7 @@ DEFINE_OP_GET_EFFECTS(WinogradFilterTransformOp)
 DEFINE_OP_GET_EFFECTS(WinogradOutputTransformOp)
 DEFINE_OP_GET_EFFECTS(AttentionOp)
 DEFINE_OP_GET_EFFECTS(OnlineAttentionOp)
+DEFINE_OP_GET_EFFECTS(ExpReductionOp)
 DEFINE_OP_GET_EFFECTS(Im2colOp)
 DEFINE_OP_GET_EFFECTS(CustomOp)
 
@@ -2686,4 +2855,7 @@ DEFINE_OP_GET_EFFECTS(CustomOp)
 // clang-format off
 #define GET_OP_CLASSES
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.cpp.inc" // IWYU pragma: keep
+
+#define GET_OP_CLASSES
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtPureOps.cpp.inc" // IWYU pragma: keep
 // clang-format: on

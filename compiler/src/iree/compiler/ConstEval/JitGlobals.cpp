@@ -69,6 +69,7 @@ emitDebugWarning(Location loc,
 // shared.
 // TODO: See if we can make them copyable?
 struct CompileOptions {
+  GlobalPipelineOptions pipelineOptions;
   BindingOptions bindingOptions;
   InputDialectOptions inputOptions;
   PreprocessingOptions preprocessingOptions;
@@ -505,7 +506,7 @@ private:
 
     // Find immutable loads.
     for (auto loadOp : funcOp.getOps<IREE::Util::GlobalLoadOpInterface>()) {
-      auto globalOp = llvm::dyn_cast_or_null<IREE::Util::GlobalOpInterface>(
+      auto globalOp = dyn_cast_if_present<IREE::Util::GlobalOpInterface>(
           sourceSymbolTable.lookup(loadOp.getGlobalAttr().getAttr()));
       if (!globalOp || globalOp.isGlobalMutable()) {
         emitDebugWarning(loadOp.getLoc(), [&](InFlightDiagnostic &diagnostic) {
@@ -555,7 +556,7 @@ private:
     // Find immutable stores, early exiting if not supported.
     // The consumers must come after rewrites of the producers above.
     for (auto storeOp : funcOp.getOps<IREE::Util::GlobalStoreOpInterface>()) {
-      auto globalOp = llvm::dyn_cast_or_null<IREE::Util::GlobalOpInterface>(
+      auto globalOp = dyn_cast_if_present<IREE::Util::GlobalOpInterface>(
           sourceSymbolTable.lookup(storeOp.getGlobalAttr().getAttr()));
       assert(globalOp && "should have been checked in isConstExpr");
 
@@ -624,12 +625,13 @@ public:
     // Disable constant evaluation for our Jit compilation pipeline.
     // It would make no sense to recursively do constant evaluation, and since
     // we omit the necessary hooks, it is unsupported anyway.
-    compileOptions->globalOptimizationOptions.constExprHoisting = false;
+    compileOptions->pipelineOptions.constExprHoisting = false;
     compileOptions->globalOptimizationOptions.constEval = false;
 
     buildIREEVMTransformPassPipeline(
-        *targetRegistry.value, compileOptions->bindingOptions,
-        compileOptions->inputOptions, compileOptions->preprocessingOptions,
+        *targetRegistry.value, compileOptions->pipelineOptions,
+        compileOptions->bindingOptions, compileOptions->inputOptions,
+        compileOptions->preprocessingOptions,
         compileOptions->globalOptimizationOptions,
         compileOptions->dispatchCreationOptions,
         compileOptions->schedulingOptions, compileOptions->executableOptions,

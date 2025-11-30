@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Bufferization/Transforms/Transforms.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 
@@ -293,6 +294,83 @@ struct YieldOpBufferizationInterface
   }
 };
 
+/// Bufferization of iree_gpu.coalesced_gather_dma. This op bufferizes to itself
+/// with memref operands instead of tensor operands.
+struct CoalescedGatherDMAOpBufferizationInterface
+    : public BufferizableOpInterface::ExternalModel<
+          CoalescedGatherDMAOpBufferizationInterface,
+          IREE::GPU::CoalescedGatherDMAOp> {
+  bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
+                              const AnalysisState &state) const {
+    auto gatherOp = cast<IREE::GPU::CoalescedGatherDMAOp>(op);
+    if (opOperand.get() == gatherOp.getSource()) {
+      return true;
+    }
+    for (Value index : gatherOp.getIndices()) {
+      if (opOperand.get() == index && isa<TensorType>(index.getType())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool bufferizesToMemoryWrite(Operation *op, OpOperand &opOperand,
+                               const AnalysisState &state) const {
+    auto gatherOp = cast<IREE::GPU::CoalescedGatherDMAOp>(op);
+    return opOperand.get() == gatherOp.getInit();
+  }
+
+  bufferization::AliasingValueList
+  getAliasingValues(Operation *op, OpOperand &opOperand,
+                    const AnalysisState &state) const {
+    auto gatherOp = cast<IREE::GPU::CoalescedGatherDMAOp>(op);
+    if (opOperand.get() == gatherOp.getInit()) {
+      return {{gatherOp.getResult(), BufferRelation::Equivalent}};
+    }
+    return {};
+  }
+
+  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
+                          const BufferizationOptions &options,
+                          bufferization::BufferizationState &state) const {
+    auto gatherOp = cast<IREE::GPU::CoalescedGatherDMAOp>(op);
+
+    FailureOr<Value> sourceBuffer =
+        getBuffer(rewriter, gatherOp.getSource(), options, state);
+    FailureOr<Value> initBuffer =
+        getBuffer(rewriter, gatherOp.getInit(), options, state);
+
+    if (failed(sourceBuffer) || failed(initBuffer)) {
+      return failure();
+    }
+
+    // Bufferize tensor indices to memrefs, keep vector indices as-is.
+    SmallVector<Value> bufferizedIndices;
+    for (Value index : gatherOp.getIndices()) {
+      if (isa<TensorType>(index.getType())) {
+        FailureOr<Value> indexBuffer =
+            getBuffer(rewriter, index, options, state);
+        if (failed(indexBuffer)) {
+          return failure();
+        }
+        bufferizedIndices.push_back(*indexBuffer);
+      } else {
+        bufferizedIndices.push_back(index);
+      }
+    }
+
+    rewriter.setInsertionPoint(gatherOp);
+
+    IREE::GPU::CoalescedGatherDMAOp::create(
+        rewriter, gatherOp.getLoc(), TypeRange{}, *sourceBuffer,
+        bufferizedIndices, *initBuffer, gatherOp.getLane());
+
+    replaceOpWithBufferizedValues(rewriter, op, *initBuffer);
+
+    return success();
+  }
+};
+
 /// AMD Specific Ops
 
 static bool hasStorageBufferMemSpace(BaseMemRefType m) {
@@ -412,6 +490,8 @@ void registerIREEGPUBufferizationInterfaces(DialectRegistry &registry) {
             ValueBarrierOpBufferizationInterface>(*context);
         IREE::GPU::YieldOp::attachInterface<YieldOpBufferizationInterface>(
             *context);
+        IREE::GPU::CoalescedGatherDMAOp::attachInterface<
+            CoalescedGatherDMAOpBufferizationInterface>(*context);
 
         IREE::GPU::BufferResourceCastOp::attachInterface<
             BufferResourceCastOpBufferizationInterface>(*context);

@@ -376,7 +376,7 @@ static void optimizeModule(llvm::Module &module,
 
 class CUDATargetDevice final : public TargetDevice {
 public:
-  CUDATargetDevice(const CUDAOptions &options) : options(options) {}
+  CUDATargetDevice(const CUDAOptions & /*options*/) {}
 
   IREE::HAL::DeviceTargetAttr
   getDefaultDeviceTarget(MLIRContext *context,
@@ -395,9 +395,6 @@ public:
                                             deviceConfigAttr,
                                             executableTargetAttrs);
   }
-
-private:
-  const CUDAOptions &options;
 };
 
 class CUDATargetBackend final : public TargetBackend {
@@ -451,7 +448,8 @@ public:
 
   void buildTranslationPassPipeline(IREE::HAL::ExecutableTargetAttr targetAttr,
                                     OpPassManager &passManager) override {
-    buildLLVMGPUCodegenPassPipeline(passManager, false);
+    buildLLVMGPUCodegenPassPipeline(passManager, false,
+                                    /*preserveDebugInfo=*/false);
   }
 
   void buildLinkingPassPipeline(OpPassManager &passManager) override {
@@ -501,7 +499,7 @@ public:
       }
 
       // Read the PTX from the object file.
-      auto objectAttr = llvm::cast<IREE::HAL::ExecutableObjectAttr>(
+      auto objectAttr = cast<IREE::HAL::ExecutableObjectAttr>(
           variantOp.getObjects()->getValue().front());
       if (auto data = objectAttr.loadData()) {
         targetPTX = data.value();
@@ -699,7 +697,10 @@ public:
     auto binaryOp = IREE::HAL::ExecutableBinaryOp::create(
         executableBuilder, variantOp.getLoc(), variantOp.getSymName(),
         variantOp.getTarget().getFormat(),
-        builder.getBufferAttr(executableBuilder.getContext()));
+        builder.getHeaderPrefixedBufferAttr(
+            executableBuilder.getContext(),
+            /*magic=*/iree_hal_cuda_ExecutableDef_file_identifier,
+            /*version=*/0));
     binaryOp.setMimeTypeAttr(
         executableBuilder.getStringAttr("application/x-flatbuffers"));
 

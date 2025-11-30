@@ -148,7 +148,7 @@ struct LinalgExtRegionHLOOpConversion final : OpConversionPattern<OpTy> {
 
 struct LinalgExtRegionReturnOpConversion final
     : OpConversionPattern<mlir::stablehlo::ReturnOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(mlir::stablehlo::ReturnOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -165,7 +165,7 @@ struct LinalgExtRegionReturnOpConversion final
 //===----------------------------------------------------------------------===//
 
 struct SortOpConversion final : OpConversionPattern<mlir::stablehlo::SortOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(mlir::stablehlo::SortOp op, OpAdaptor adaptor,
@@ -204,7 +204,7 @@ struct SortOpConversion final : OpConversionPattern<mlir::stablehlo::SortOp> {
 
 struct ScatterOpConversion final
     : OpConversionPattern<mlir::stablehlo::ScatterOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   /// Returns true if the `dimensionNumbers` from the stablehlo.scatter op
   /// follows a canonical form:
@@ -216,7 +216,7 @@ struct ScatterOpConversion final
   /// * Update window dims order: (d + 1, ... , m)
   static bool hasCanonicalDimensionNumbers(mlir::stablehlo::ScatterOp op) {
     auto dimNumbers = op.getScatterDimensionNumbers();
-    auto indicesType = llvm::cast<ShapedType>(op.getScatterIndices().getType());
+    auto indicesType = cast<ShapedType>(op.getScatterIndices().getType());
     auto indicesRank = indicesType.getRank();
     auto indexVectorDim = dimNumbers.getIndexVectorDim();
     auto indexDepth = indicesType.getShape().back();
@@ -260,7 +260,7 @@ struct ScatterOpConversion final
     Value indices = adaptor.getScatterIndices();
     Value updates = adaptor.getUpdates().front();
 
-    auto originalType = llvm::dyn_cast<ShapedType>(original.getType());
+    auto originalType = dyn_cast<ShapedType>(original.getType());
 
     llvm::SmallVector<int64_t> scatterDimMap;
     for (auto dim :
@@ -295,7 +295,7 @@ struct ScatterOpConversion final
 //===----------------------------------------------------------------------===//
 
 struct FftOpConversion final : OpConversionPattern<mlir::stablehlo::FftOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(mlir::stablehlo::FftOp op, OpAdaptor adaptor,
@@ -330,7 +330,7 @@ struct FftOpConversion final : OpConversionPattern<mlir::stablehlo::FftOp> {
 
 struct ReverseOpConversion final
     : OpConversionPattern<mlir::stablehlo::ReverseOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(mlir::stablehlo::ReverseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -397,7 +397,7 @@ static bool checkUnary(const ArrayRef<int64_t> &values) {
 
 struct ScanOpConversion final
     : OpConversionPattern<mlir::stablehlo::ReduceWindowOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(mlir::stablehlo::ReduceWindowOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -546,18 +546,16 @@ struct ScanOpConversion final
 //===----------------------------------------------------------------------===//
 
 struct TopkOpConversion final : OpConversionPattern<chlo::TopKOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(chlo::TopKOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value operand = adaptor.getOperand();
 
-    auto inputValuesType = llvm::dyn_cast<ShapedType>(operand.getType());
-    auto outputValuesType =
-        llvm::dyn_cast<ShapedType>(op.getValues().getType());
-    auto outputIndicesType =
-        llvm::dyn_cast<ShapedType>(op.getIndices().getType());
+    auto inputValuesType = dyn_cast<ShapedType>(operand.getType());
+    auto outputValuesType = dyn_cast<ShapedType>(op.getValues().getType());
+    auto outputIndicesType = dyn_cast<ShapedType>(op.getIndices().getType());
     if (!inputValuesType || !outputValuesType || !outputIndicesType) {
       return rewriter.notifyMatchFailure(
           op, "Input and output must be of ShapedType");
@@ -566,7 +564,7 @@ struct TopkOpConversion final : OpConversionPattern<chlo::TopKOp> {
     Type valueElementType = inputValuesType.getElementType();
     Type indicesElementType = outputIndicesType.getElementType();
     // Only handle integer types for indicies. Index type is not supported.
-    if (!llvm::isa<IntegerType>(indicesElementType)) {
+    if (!isa<IntegerType>(indicesElementType)) {
       return rewriter.notifyMatchFailure(
           op, "Output indices must be of integer type.");
     }
@@ -582,13 +580,13 @@ struct TopkOpConversion final : OpConversionPattern<chlo::TopKOp> {
         rewriter, loc, mixedSizes, indicesElementType);
     // Initialize indices to 0 and values to negative infinity
     TypedAttr negInfAttr;
-    if (auto intType = llvm::dyn_cast<IntegerType>(valueElementType)) {
+    if (auto intType = dyn_cast<IntegerType>(valueElementType)) {
       negInfAttr = rewriter.getIntegerAttr(
           intType, APInt::getSignedMinValue(intType.getWidth()));
     } else {
-      auto negApFloat = APFloat::getInf(
-          llvm::cast<FloatType>(valueElementType).getFloatSemantics(),
-          /*Negative=*/true);
+      auto negApFloat =
+          APFloat::getInf(cast<FloatType>(valueElementType).getFloatSemantics(),
+                          /*Negative=*/true);
       negInfAttr = rewriter.getFloatAttr(valueElementType, negApFloat);
     }
     Value negInf = arith::ConstantOp::create(rewriter, loc, negInfAttr);
@@ -625,7 +623,7 @@ struct TopkOpConversion final : OpConversionPattern<chlo::TopKOp> {
       Value lhs = block->getArgument(0);
       Value rhs = block->getArgument(1);
       Value condition;
-      if (llvm::isa<IntegerType>(valueElementType)) {
+      if (isa<IntegerType>(valueElementType)) {
         condition = arith::CmpIOp::create(rewriter, loc,
                                           arith::CmpIPredicate::sge, lhs, rhs);
       } else {

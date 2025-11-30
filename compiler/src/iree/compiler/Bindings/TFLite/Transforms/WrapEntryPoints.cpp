@@ -157,7 +157,7 @@ private:
     for (auto [arg, inputName, inputType] : llvm::zip_equal(
              funcOp.getArguments(), inputNames, funcType.getInputs())) {
       auto fullName = (namePrefix + "_" + inputName + "_shape").str();
-      auto tensorType = llvm::dyn_cast<TensorType>(inputType);
+      auto tensorType = dyn_cast<TensorType>(inputType);
       assert(tensorType && "expecting only tensors in tflite function I/O");
       inputDynamicDims.push_back(createDynamicDimGlobals(
           arg.getLoc(), fullName, tensorType, moduleBuilder));
@@ -166,7 +166,7 @@ private:
     for (auto [outputName, outputType] :
          llvm::zip_equal(outputNames, funcType.getResults())) {
       auto fullName = (namePrefix + "_" + outputName + "_shape").str();
-      auto tensorType = llvm::dyn_cast<TensorType>(outputType);
+      auto tensorType = dyn_cast<TensorType>(outputType);
       assert(tensorType && "expecting only tensors in tflite function I/O");
       outputDynamicDims.push_back(
           createDynamicDimGlobals(loc, fullName, tensorType, moduleBuilder));
@@ -259,8 +259,8 @@ private:
       IREE::Util::ReturnOp::create(exitBuilder, exitLoc);
       returnOp.erase();
     }
-
-    OpBuilder::atBlockBegin(returnBlock).create<IREE::Util::ReturnOp>(loc);
+    OpBuilder builder = OpBuilder::atBlockBegin(returnBlock);
+    IREE::Util::ReturnOp::create(builder, loc);
 
     return calcFuncOp;
   }

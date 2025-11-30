@@ -242,7 +242,7 @@ void moveLoopInvariantCodeFromGenericOps(Operation *op) {
 namespace {
 struct CastLikeExtractSliceOpFolder final
     : OpRewritePattern<tensor::ExtractSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::ExtractSliceOp sliceOp,
                                 PatternRewriter &rewriter) const override {
@@ -257,7 +257,7 @@ struct CastLikeExtractSliceOpFolder final
 
 struct CastLikeInsertSliceOpFolder final
     : OpRewritePattern<tensor::InsertSliceOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::InsertSliceOp sliceOp,
                                 PatternRewriter &rewriter) const override {
@@ -282,7 +282,7 @@ struct CastLikeInsertSliceOpFolder final
 /// write to memory.
 // TODO: Consider upstreaming
 struct FoldMaskedTransferRAW : OpRewritePattern<vector::TransferReadOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::TransferReadOp op,
                                 PatternRewriter &rewriter) const override {
@@ -292,8 +292,8 @@ struct FoldMaskedTransferRAW : OpRewritePattern<vector::TransferReadOp> {
     }
 
     // Try to get the producing write op.
-    auto writeOp =
-        dyn_cast_or_null<vector::TransferWriteOp>(op.getBase().getDefiningOp());
+    auto writeOp = dyn_cast_if_present<vector::TransferWriteOp>(
+        op.getBase().getDefiningOp());
     // Fail to match if the write doesn't have pure tensor semantics.
     if (!writeOp || !writeOp.hasPureTensorSemantics()) {
       return failure();

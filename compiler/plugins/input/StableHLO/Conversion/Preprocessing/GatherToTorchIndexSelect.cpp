@@ -21,7 +21,7 @@ namespace mlir::iree_compiler::stablehlo {
 namespace {
 struct GatherIsTorchIndexSelectPattern final
     : OpRewritePattern<mlir::stablehlo::GatherOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::GatherOp gather,
                                 PatternRewriter &rewriter) const override {
@@ -60,8 +60,7 @@ struct GatherIsTorchIndexSelectPattern final
       return rewriter.notifyMatchFailure(gather, "start_index_map != [0]");
     }
 
-    auto resultTy =
-        llvm::dyn_cast<RankedTensorType>(gather.getResult().getType());
+    auto resultTy = dyn_cast<RankedTensorType>(gather.getResult().getType());
     if (!resultTy) {
       return rewriter.notifyMatchFailure(gather, "unranked result");
     }

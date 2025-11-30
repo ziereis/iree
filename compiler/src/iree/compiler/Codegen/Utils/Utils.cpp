@@ -7,6 +7,7 @@
 #include "iree/compiler/Codegen/Utils/Utils.h"
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/UKernelOps.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
 #include "iree/compiler/Codegen/Interfaces/ProcessorOpInterfaces.h"
 #include "iree/compiler/Codegen/Interfaces/UKernelOpInterface.h"
@@ -46,6 +47,8 @@ constexpr char kCpuFeaturesAttrName[] = "cpu_features";
 constexpr char kDataLayoutAttrName[] = "data_layout";
 constexpr char kTargetInfoAttrName[] = "iree_codegen.target_info";
 constexpr char kTargetTripleAttrName[] = "target_triple";
+// For optimal performance we always want to copy 128 bits
+constexpr int64_t kPreferredCopyNumBits = 128;
 
 namespace mlir::iree_compiler {
 
@@ -300,7 +303,7 @@ bool isReadOnly(Value v) {
           [&](auto op) { return isReadOnly(op.getSource()); })
       .Case<IREE::TensorExt::DispatchTensorLoadOp>(
           [&](IREE::TensorExt::DispatchTensorLoadOp loadOp) {
-            return llvm::cast<IREE::TensorExt::DispatchTensorType>(
+            return cast<IREE::TensorExt::DispatchTensorType>(
                        loadOp.getSource().getType())
                        .getAccess() == IREE::TensorExt::TensorAccess::ReadOnly;
           })
@@ -873,13 +876,13 @@ isTiledAndDistributedLoop(scf::ForOp forOp) {
     // Try to see if this is a specical case where we have:
     //   scf.for %iv = %id to %ub step %count
     std::optional<unsigned> idDim;
-    if (auto ifx = dyn_cast_or_null<ProcessorIDInterface>(
+    if (auto ifx = dyn_cast_if_present<ProcessorIDInterface>(
             forOp.getLowerBound().getDefiningOp())) {
       idDim = ifx.getDimIndex();
     }
 
     std::optional<unsigned> countDim;
-    if (auto ifx = dyn_cast_or_null<ProcessorCountInterface>(
+    if (auto ifx = dyn_cast_if_present<ProcessorCountInterface>(
             forOp.getStep().getDefiningOp())) {
       countDim = ifx.getDimIndex();
     }
@@ -974,36 +977,6 @@ void setSCFTileSizes(scf::SCFTilingOptions &options, TilingInterface op,
   }
 }
 
-/// Create a linalg::GenericOp version of an n-D copy that can further tile,
-/// lower to loops or vectorize, unlike the current implementation of
-/// memref::CopyOp.
-Operation *createLinalgCopyOp(OpBuilder &b, Location loc, Value from, Value to,
-                              ArrayRef<NamedAttribute> attributes) {
-  auto memrefTypeFrom = llvm::dyn_cast<MemRefType>(from.getType());
-  auto memrefTypeTo = llvm::dyn_cast<MemRefType>(to.getType());
-  if (!memrefTypeFrom || !memrefTypeTo ||
-      memrefTypeFrom.getRank() != memrefTypeTo.getRank()) {
-    mlir::emitError(
-        loc, "unable to generate copy op within bufferization from type ")
-        << memrefTypeFrom << " to " << memrefTypeTo;
-    return nullptr;
-  }
-  AffineMap id =
-      AffineMap::getMultiDimIdentityMap(memrefTypeTo.getRank(), b.getContext());
-  SmallVector<utils::IteratorType> iteratorTypes(memrefTypeTo.getRank(),
-                                                 utils::IteratorType::parallel);
-  return linalg::GenericOp::create(
-      b, loc,
-      /*inputs=*/from,
-      /*outputs=*/to,
-      /*indexingMaps=*/llvm::ArrayRef({id, id}),
-      /*iteratorTypes=*/iteratorTypes,
-      [](OpBuilder &b, Location loc, ValueRange args) {
-        linalg::YieldOp::create(b, loc, args.front());
-      },
-      attributes);
-}
-
 template <typename OpTy>
 static Value buildHALWorkgroupInfoOp(OpBuilder &b, unsigned dim) {
   return OpTy::create(b, b.getInsertionPoint()->getLoc(), dim);
@@ -1089,7 +1062,7 @@ FailureOr<int64_t> getSoftwarePipelineDepth(DictionaryAttr config) {
   if (!depth) {
     return failure();
   }
-  return llvm::cast<IntegerAttr>(depth).getInt();
+  return cast<IntegerAttr>(depth).getInt();
 }
 
 FailureOr<int64_t> getSoftwarePipelineStoreStage(DictionaryAttr config) {
@@ -1100,7 +1073,7 @@ FailureOr<int64_t> getSoftwarePipelineStoreStage(DictionaryAttr config) {
   if (!stage) {
     return failure();
   }
-  return llvm::cast<IntegerAttr>(stage).getInt();
+  return cast<IntegerAttr>(stage).getInt();
 }
 
 /// Returns a small tiling factor for the given reduction `dimSize`.
@@ -1140,6 +1113,33 @@ int64_t getMinElementBitwidth(linalg::LinalgOp linalgOp) {
 // Bufferization utility functions
 //===---------------------------------------------------------------------===//
 
+std::optional<IREE::HAL::InterfaceBindingSubspanOp>
+getSourceSubspanMemref(TypedValue<MemRefType> buffer) {
+  Operation *currentOp = buffer.getDefiningOp();
+  while (currentOp) {
+    if (auto subspanOp =
+            dyn_cast<IREE::HAL::InterfaceBindingSubspanOp>(currentOp)) {
+      return subspanOp;
+    }
+    // There is expected to be only a single memref source for a given memref
+    // OpResult, because producers of memref Values are expected to be
+    // view-like or cast-like operations. Bail if there are multiple memref
+    // operands, since we don't know which one to use as the source.
+    if (llvm::count_if(currentOp->getOperandTypes(),
+                       llvm::IsaPred<MemRefType>) != 1) {
+      return std::nullopt;
+    }
+    // Otherwise, follow the memref operand to find the source buffer.
+    for (Value operand : currentOp->getOperands()) {
+      if (isa<MemRefType>(operand.getType())) {
+        currentOp = operand.getDefiningOp();
+        break;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
 /// Get strides for row-major oredering of a tensor with the given `shape`.
 static SmallVector<int64_t> getStridesFromShape(ArrayRef<int64_t> shape) {
   if (shape.empty()) {
@@ -1158,7 +1158,7 @@ static SmallVector<int64_t> getStridesFromShape(ArrayRef<int64_t> shape) {
 
 Value findOrCreateSubspanBuffer(
     RewriterBase &rewriter, IREE::HAL::InterfaceBindingSubspanOp subspanOp) {
-  auto shapedType = llvm::dyn_cast<IREE::TensorExt::DispatchTensorType>(
+  auto shapedType = dyn_cast<IREE::TensorExt::DispatchTensorType>(
       subspanOp.getResult().getType());
   assert((shapedType && shapedType.hasRank()) &&
          "expected the result of subspanOp is DispatchTensorType");
@@ -1169,7 +1169,7 @@ Value findOrCreateSubspanBuffer(
     // Using buffer resources on AMDGPU will require buffers to be relocated to
     // offset 0, so any static offset we can compute here might change.
     // Therefore, always use a ? for the offset field unless it's known to be 0.
-    auto tensorType = llvm::cast<RankedTensorType>(shapedType.getBoundType());
+    auto tensorType = cast<RankedTensorType>(shapedType.getBoundType());
     SmallVector<int64_t> strides = getStridesFromShape(tensorType.getShape());
     layoutAttr = StridedLayoutAttr::get(rewriter.getContext(),
                                         ShapedType::kDynamic, strides);
@@ -1198,7 +1198,7 @@ Value findOrCreateSubspanBuffer(
       continue;
 
     auto bufferMemrefType =
-        llvm::dyn_cast<MemRefType>(bufferSubspanOp.getResult().getType());
+        dyn_cast<MemRefType>(bufferSubspanOp.getResult().getType());
     if (!bufferMemrefType)
       continue;
 
@@ -1212,7 +1212,7 @@ Value findOrCreateSubspanBuffer(
       continue;
 
     if (useRocdlBuffers && bufferSubspanOp->hasOneUse()) {
-      auto castOp = llvm::dyn_cast<amdgpu::FatRawBufferCastOp>(
+      auto castOp = dyn_cast<amdgpu::FatRawBufferCastOp>(
           *bufferSubspanOp->getUsers().begin());
       if (!castOp)
         continue;
@@ -1395,9 +1395,8 @@ replaceNonTrivialUse(RewriterBase &rewriter, Location loc, OpOperand &use,
 
   LDBG() << "\tReplacing in user by creating new user : " << *user;
   if (auto castOp = dyn_cast<memref::CastOp>(user)) {
-    auto replacementType = llvm::cast<MemRefType>(replacement.getType());
-    auto currentResultType =
-        llvm::cast<MemRefType>(castOp.getResult().getType());
+    auto replacementType = cast<MemRefType>(replacement.getType());
+    auto currentResultType = cast<MemRefType>(castOp.getResult().getType());
     if (replacementType == currentResultType) {
       // Cast is a no op, just return the replacement.
       return SmallVector<Value>{replacement};
@@ -1412,18 +1411,16 @@ replaceNonTrivialUse(RewriterBase &rewriter, Location loc, OpOperand &use,
                               newCastOp->result_end());
   }
   if (auto subviewOp = dyn_cast<memref::SubViewOp>(user)) {
-    auto currResultType =
-        llvm::cast<MemRefType>(subviewOp.getResult().getType());
-    auto newSourceType = llvm::cast<MemRefType>(replacement.getType());
+    auto currResultType = cast<MemRefType>(subviewOp.getResult().getType());
+    auto newSourceType = cast<MemRefType>(replacement.getType());
     SmallVector<OpFoldResult> offsets = subviewOp.getMixedOffsets();
     SmallVector<OpFoldResult> sizes = subviewOp.getMixedSizes();
     SmallVector<OpFoldResult> strides = subviewOp.getMixedStrides();
     MemRefType newResultType =
         (currResultType.getRank() != newSourceType.getRank()
-             ? llvm::cast<MemRefType>(
-                   memref::SubViewOp::inferRankReducedResultType(
-                       currResultType.getShape(), newSourceType, offsets, sizes,
-                       strides))
+             ? cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
+                   currResultType.getShape(), newSourceType, offsets, sizes,
+                   strides))
              : nullptr);
     auto newSubviewOp = memref::SubViewOp::create(
         rewriter, loc, newResultType, replacement, offsets, sizes, strides);
@@ -1432,9 +1429,8 @@ replaceNonTrivialUse(RewriterBase &rewriter, Location loc, OpOperand &use,
     return llvm::to_vector_of<Value>(newSubviewOp->getResults());
   }
   if (auto expandOp = dyn_cast<memref::ExpandShapeOp>(user)) {
-    auto currResultType =
-        llvm::cast<MemRefType>(expandOp.getResult().getType());
-    auto newSourceType = llvm::cast<MemRefType>(replacement.getType());
+    auto currResultType = cast<MemRefType>(expandOp.getResult().getType());
+    auto newSourceType = cast<MemRefType>(replacement.getType());
 
     FailureOr<MemRefType> newResultType =
         memref::ExpandShapeOp::computeExpandedType(
@@ -1451,7 +1447,7 @@ replaceNonTrivialUse(RewriterBase &rewriter, Location loc, OpOperand &use,
     return llvm::to_vector_of<Value>(newExpandOp->getResults());
   }
   if (auto collapseOp = dyn_cast<memref::CollapseShapeOp>(user)) {
-    auto newSourceType = llvm::cast<MemRefType>(replacement.getType());
+    auto newSourceType = cast<MemRefType>(replacement.getType());
     FailureOr<MemRefType> newResultType =
         memref::CollapseShapeOp::computeCollapsedType(
             newSourceType, collapseOp.getReassociationIndices());
@@ -1577,7 +1573,7 @@ SmallVector<int64_t> getStaticNumWorkgroups(mlir::FunctionOpInterface funcOp) {
 
   for (unsigned i = 0; i < 3; ++i) {
     Operation *defOp = returnOp.getOperand(i).getDefiningOp();
-    if (auto indexOp = dyn_cast_or_null<arith::ConstantIndexOp>(defOp)) {
+    if (auto indexOp = dyn_cast_if_present<arith::ConstantIndexOp>(defOp)) {
       result.push_back(indexOp.value());
     } else {
       result.push_back(ShapedType::kDynamic);
@@ -1722,8 +1718,8 @@ inferSizesFromIR(linalg::LinalgOp linalgOp, std::optional<OpResult> opResult) {
     unsigned firstOperandDim = operandDimPairs[0].second;
 
     // Trivial case: `dim` size is available in the operand type.
-    int64_t dimSize = llvm::cast<ShapedType>(firstOperand.getType())
-                          .getShape()[firstOperandDim];
+    int64_t dimSize =
+        cast<ShapedType>(firstOperand.getType()).getShape()[firstOperandDim];
     bool dimScalable = false;
     if (ShapedType::isStatic(dimSize)) {
       result.vectorSizes.push_back(dimSize);
@@ -1796,6 +1792,7 @@ std::optional<VectorizationTileSizes> inferSizesFromIR(linalg::PackOp op) {
   if (!outerDimsPerm.empty()) {
     applyPermutationToVector(result.vectorSizes, outerDimsPerm);
   }
+  llvm::append_range(result.vectorSizes, op.getStaticInnerTiles());
 
   LLVM_DEBUG({
     LDBG() << "After adjustment with inner tiles and outer_dims_perm:";
@@ -1806,6 +1803,29 @@ std::optional<VectorizationTileSizes> inferSizesFromIR(linalg::PackOp op) {
   result.destShape = result.vectorSizes;
 
   return result;
+}
+
+std::optional<SizesAndScalableFlags>
+getVectorInputSizesFromUnpackedDomain(linalg::PackOp op,
+                                      ArrayRef<int64_t> readVectorSizes,
+                                      ArrayRef<bool> scalableFlags) {
+  assert(readVectorSizes.size() == op.getSourceRank());
+  if (llvm::any_of(scalableFlags, [](bool val) { return val; })) {
+    return std::nullopt;
+  }
+  // TODO: Infer scalable sizes.
+  if (llvm::any_of(op.getStaticInnerTiles(), ShapedType::isDynamic)) {
+    return std::nullopt;
+  }
+
+  SmallVector<int64_t> writeSizes(readVectorSizes);
+  SmallVector<bool> writeScalableFlags(scalableFlags);
+  for (int64_t innerTileSize : op.getStaticInnerTiles()) {
+    writeSizes.push_back(innerTileSize);
+    writeScalableFlags.push_back(false);
+  }
+
+  return SizesAndScalableFlags{writeSizes, writeScalableFlags};
 }
 
 std::optional<SizesAndScalableFlags>
@@ -1913,6 +1933,44 @@ std::optional<VectorizationTileSizes> inferSizesFromIR(linalg::UnPackOp op) {
   return result;
 }
 
+std::optional<VectorizationTileSizes>
+inferSizesFromIR(IREE::Codegen::UKernelGenericOp ukernelOp, OpResult opResult) {
+  LDBG() << "Inferring dest sizes for: " << ukernelOp;
+  auto resultType = dyn_cast<RankedTensorType>(opResult.getType());
+  if (!resultType) {
+    LDBG()
+        << "failed to infer sizes because result type is not a ranked tensor";
+    return std::nullopt;
+  }
+
+  VectorizationTileSizes result;
+  for (auto [idx, dim] : llvm::enumerate(resultType.getShape())) {
+    if (ShapedType::isDynamic(dim)) {
+      FailureOr<int64_t> maybeDimBound =
+          ValueBoundsConstraintSet::computeConstantBound(
+              presburger::BoundType::UB, {opResult, static_cast<unsigned>(idx)},
+              /*stopCondition=*/nullptr, /*closedUB=*/true);
+      if (failed(maybeDimBound)) {
+        LDBG() << "failed to infer bounds for dynamic dim";
+        return std::nullopt;
+      }
+      result.vectorSizes.push_back(maybeDimBound.value());
+    } else {
+      result.vectorSizes.push_back(dim);
+    }
+  }
+  result.destShape = result.vectorSizes;
+
+  LLVM_DEBUG({
+    LDBG() << "Inferred vector sizes:";
+    for (auto [idx, val] : llvm::enumerate(result.vectorSizes)) {
+      LDBG() << "Dim #" << idx << ": " << val;
+    }
+  });
+
+  return result;
+}
+
 std::optional<VectorizationTileSizes> static inferSizesFromMixedSizes(
     SmallVector<OpFoldResult> shape) {
   VectorizationTileSizes result;
@@ -1949,6 +2007,8 @@ std::optional<VectorizationTileSizes> inferSizesFromIR(Value val) {
         // the values.
         result = inferSizesFromMixedSizes(op.getMixedSizes());
       })
+      .Case<IREE::Codegen::UKernelGenericOp>(
+          [&](auto op) { result = inferSizesFromIR(op, cast<OpResult>(val)); })
       .Default([&](Operation *) {});
 
   return result;
@@ -2017,6 +2077,85 @@ bool hasExternalCapture(linalg::GenericOp genericOp) {
     }
   }
   return false; // All operands are locally defined or block arguments.
+}
+
+//===----------------------------------------------------------------------===//
+// Utility functions for copy operations
+//===----------------------------------------------------------------------===//
+
+Operation *createLinalgCopyOp(OpBuilder &b, Location loc, Value from, Value to,
+                              ArrayRef<NamedAttribute> attributes) {
+  auto memrefTypeFrom = dyn_cast<MemRefType>(from.getType());
+  auto memrefTypeTo = dyn_cast<MemRefType>(to.getType());
+  if (!memrefTypeFrom || !memrefTypeTo ||
+      memrefTypeFrom.getRank() != memrefTypeTo.getRank()) {
+    mlir::emitError(
+        loc, "unable to generate copy op within bufferization from type ")
+        << memrefTypeFrom << " to " << memrefTypeTo;
+    return nullptr;
+  }
+  AffineMap id =
+      AffineMap::getMultiDimIdentityMap(memrefTypeTo.getRank(), b.getContext());
+  SmallVector<utils::IteratorType> iteratorTypes(memrefTypeTo.getRank(),
+                                                 utils::IteratorType::parallel);
+  return linalg::GenericOp::create(
+      b, loc,
+      /*inputs=*/from,
+      /*outputs=*/to,
+      /*indexingMaps=*/llvm::ArrayRef({id, id}),
+      /*iteratorTypes=*/iteratorTypes,
+      [](OpBuilder &b, Location loc, ValueRange args) {
+        linalg::YieldOp::create(b, loc, args.front());
+      },
+      attributes);
+}
+
+SmallVector<OpFoldResult> getCopyTileSizes(OpBuilder &b, memref::CopyOp copy) {
+  int64_t rank = copy.getTarget().getType().getRank();
+  if (rank == 0) {
+    return {};
+  }
+
+  SmallVector<OpFoldResult> tileSizes(rank - 1, b.getIndexAttr(1));
+  int64_t elementBitWidth =
+      cast<MemRefType>(copy.getTarget().getType()).getElementTypeBitWidth();
+  tileSizes.push_back(b.getIndexAttr(kPreferredCopyNumBits / elementBitWidth));
+  return tileSizes;
+}
+
+std::optional<SmallVector<int64_t>> getCopyTileSizes(linalg::CopyOp copyOp) {
+  auto type =
+      dyn_cast<MemRefType>(copyOp.getDpsInputOperand(0)->get().getType());
+  if (!type) {
+    return std::nullopt;
+  }
+  SmallVector<int64_t> bounds = copyOp.getStaticLoopRanges();
+  int64_t elementBitWidth = type.getElementTypeBitWidth();
+  SmallVector<int64_t> tileSizes(bounds.size(), 1);
+  int64_t innerBound = bounds.back();
+  const int64_t preferredCopyNumElements =
+      kPreferredCopyNumBits / elementBitWidth;
+  if (ShapedType::isDynamic(innerBound) ||
+      innerBound >= preferredCopyNumElements) {
+    tileSizes[bounds.size() - 1] = preferredCopyNumElements;
+    return tileSizes;
+  }
+  // Distribute the preferred number of elements being copied across multiple
+  // dimensions if possible.
+  int64_t remPreferredCopyNumElementsDiv = preferredCopyNumElements;
+  for (auto [i, b] : llvm::enumerate(llvm::reverse(bounds))) {
+    size_t index = bounds.size() - i - 1;
+    if (remPreferredCopyNumElementsDiv < b) {
+      tileSizes[index] = remPreferredCopyNumElementsDiv;
+      break;
+    }
+    tileSizes[index] = b;
+    remPreferredCopyNumElementsDiv /= b;
+    if (remPreferredCopyNumElementsDiv == 0) {
+      break;
+    }
+  }
+  return tileSizes;
 }
 
 } // namespace mlir::iree_compiler

@@ -44,15 +44,15 @@ namespace {
 ///      : vector<1x16x8xf32> to vector<16x1x8xf32>
 /// ```
 struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::TransferReadOp transferReadOp,
                                 PatternRewriter &rewriter) const override {
     auto loc = transferReadOp.getLoc();
     Value vector = transferReadOp.getVector();
-    VectorType vectorType = llvm::cast<VectorType>(vector.getType());
+    VectorType vectorType = cast<VectorType>(vector.getType());
     Value source = transferReadOp.getBase();
-    MemRefType sourceType = llvm::dyn_cast<MemRefType>(source.getType());
+    MemRefType sourceType = dyn_cast<MemRefType>(source.getType());
     // Contiguity check is valid on tensors only.
     if (!sourceType)
       return failure();
@@ -120,7 +120,7 @@ struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
       subViewStrides.push_back(rewriter.getIndexAttr(1));
     }
     MemRefType resultType =
-        llvm::cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
+        cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
             vectorShapeCollapse, sourceType, subViewOffsets, subViewSizes,
             subViewStrides));
     Value subView =
@@ -153,7 +153,7 @@ struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
 // MMA types but MMA load can transpose the matrix when loading.
 struct CombineTransferReadOpBroadcast final
     : public OpRewritePattern<vector::BroadcastOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::BroadcastOp op,
                                 PatternRewriter &rewriter) const override {
@@ -201,12 +201,12 @@ static LogicalResult contractOpFilter(Operation *op) {
 // The memref descriptor being an SSA value, there is no need to clean it up
 // in any way.
 struct DropSharedMemoryDeallocOp : public OpRewritePattern<memref::DeallocOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(memref::DeallocOp op,
                                 PatternRewriter &rewriter) const override {
     if (!hasSharedMemoryAddressSpace(
-            llvm::cast<MemRefType>(op.getMemref().getType())))
+            cast<MemRefType>(op.getMemref().getType())))
       return failure();
     rewriter.eraseOp(op);
     return success();

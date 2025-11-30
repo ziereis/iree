@@ -26,8 +26,7 @@ static bool areAllRankReducedLeadingDim(tensor::ExtractSliceOp extractOp,
     return true;
 
   RankedTensorType inferredType = extractOp.inferResultType(
-      extractOp.getSourceType(), extractOp.getMixedOffsets(),
-      extractOp.getMixedSizes(), extractOp.getMixedStrides());
+      extractOp.getSourceType(), extractOp.getMixedSizes());
   return extractOp.getType().getShape().take_back(trailingRank) ==
          inferredType.getShape().take_back(trailingRank);
 }
@@ -53,7 +52,7 @@ namespace {
 class FoldExtractSliceIntoTransferRead final
     : public OpRewritePattern<vector::TransferReadOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::TransferReadOp xferOp,
                                 PatternRewriter &rewriter) const override {
@@ -195,7 +194,7 @@ static bool isDestinationFullyOverwritten(vector::TransferWriteOp writeOp) {
 class FoldInsertSliceIntoTransferWrite final
     : public OpRewritePattern<tensor::InsertSliceOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::InsertSliceOp insertOp,
                                 PatternRewriter &rewriter) const override {
@@ -237,9 +236,8 @@ public:
         insertOp.getType().getRank() - insertOp.getSourceType().getRank();
     int64_t vectorRank = xferOp.getVectorType().getRank();
     RankedTensorType inferredSourceTensorType =
-        tensor::ExtractSliceOp::inferResultType(
-            insertOp.getType(), insertOp.getMixedOffsets(),
-            insertOp.getMixedSizes(), insertOp.getMixedStrides());
+        tensor::ExtractSliceOp::inferResultType(insertOp.getType(),
+                                                insertOp.getMixedSizes());
     auto actualSourceTensorShape = insertOp.getSourceType().getShape();
     if (rankReduced > 0 &&
         actualSourceTensorShape.take_back(vectorRank) !=
@@ -280,7 +278,7 @@ public:
 class FoldExtractSliceIntoTransferWrite final
     : public OpRewritePattern<tensor::ExtractSliceOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::ExtractSliceOp extractSliceOp,
                                 PatternRewriter &rewriter) const override {

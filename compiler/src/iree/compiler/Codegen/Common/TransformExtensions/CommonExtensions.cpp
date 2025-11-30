@@ -12,7 +12,6 @@
 #include "iree/compiler/Codegen/Common/GPU/GPUVectorDistribution.h"
 #include "iree/compiler/Codegen/Common/GPU/Passes.h"
 #include "iree/compiler/Codegen/Common/Transforms.h"
-#include "iree/compiler/Codegen/Common/VectorLayoutAnalysis.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUOps.h"
 #include "iree/compiler/Codegen/Dialect/GPU/Transforms/Transforms.h"
@@ -416,7 +415,7 @@ static LogicalResult rewriteForallToWorkgroup(RewriterBase &rewriter,
   SmallVector<Attribute> blockMapping =
       llvm::to_vector(forallOp.getMapping()->getValue());
   if (llvm::any_of(blockMapping, [](Attribute map) {
-        return !llvm::isa<gpu::GPUBlockMappingAttr>(map);
+        return !isa<gpu::GPUBlockMappingAttr>(map);
       })) {
     return forallOp->emitError("mapping must be #gpu.block<x/y/z/>");
   }
@@ -436,10 +435,8 @@ static LogicalResult rewriteForallToWorkgroup(RewriterBase &rewriter,
   }
   // Step 2. sort the values by the corresponding GPUBlockMappingAttr.
   auto comparator = [](Attribute a, Attribute b) -> bool {
-    return static_cast<int64_t>(
-               llvm::cast<gpu::GPUBlockMappingAttr>(a).getBlock()) <
-           static_cast<int64_t>(
-               llvm::cast<gpu::GPUBlockMappingAttr>(b).getBlock());
+    return static_cast<int64_t>(cast<gpu::GPUBlockMappingAttr>(a).getBlock()) <
+           static_cast<int64_t>(cast<gpu::GPUBlockMappingAttr>(b).getBlock());
   };
   SmallVector<Value> gridDimValues =
       getValuesSortedByKey(blockMapping, numBlocks, comparator);
@@ -448,8 +445,8 @@ static LogicalResult rewriteForallToWorkgroup(RewriterBase &rewriter,
   IRMapping bvm;
   SmallVector<Value> workgroupIdOps, workgroupCountOps;
   for (Attribute attr : blockMapping) {
-    auto idx = static_cast<int64_t>(
-        llvm::cast<gpu::GPUBlockMappingAttr>(attr).getBlock());
+    auto idx =
+        static_cast<int64_t>(cast<gpu::GPUBlockMappingAttr>(attr).getBlock());
     workgroupIdOps.push_back(
         HAL::InterfaceWorkgroupIDOp::create(rewriter, loc, idx));
     workgroupCountOps.push_back(
@@ -550,7 +547,7 @@ transform_dialect::GpuDistributeSharedMemoryCopyOp::applyToOne(
       return;
 
     auto destSpace =
-        dyn_cast_or_null<gpu::AddressSpaceAttr>(destType.getMemorySpace());
+        dyn_cast_if_present<gpu::AddressSpaceAttr>(destType.getMemorySpace());
     if (!destSpace)
       return;
 
@@ -644,8 +641,7 @@ transform_dialect::PopulateWorkgroupCountRegionUsingNumThreadsSliceOp::
     // Get the mapping IDs.
     auto mappingIds = llvm::map_to_vector(
         blockMapping.value(), [](Attribute mappingAttr) -> int {
-          return llvm::cast<DeviceMappingAttrInterface>(mappingAttr)
-              .getMappingId();
+          return cast<DeviceMappingAttrInterface>(mappingAttr).getMappingId();
         });
     int maxId = 0;
     for (auto id : mappingIds) {
@@ -803,8 +799,8 @@ static LogicalResult gpuComprehensiveBufferizeCopyFn(OpBuilder &builder,
                                                      Value to) {
   // Insert barriers for copies from and to shared memory.
   bool needsBarrier = false;
-  if (hasSharedMemoryAddressSpace(llvm::cast<MemRefType>(from.getType())) !=
-      hasSharedMemoryAddressSpace(llvm::cast<MemRefType>(to.getType()))) {
+  if (hasSharedMemoryAddressSpace(cast<MemRefType>(from.getType())) !=
+      hasSharedMemoryAddressSpace(cast<MemRefType>(to.getType()))) {
     needsBarrier = true;
   }
   if (needsBarrier)
@@ -851,7 +847,7 @@ static IREEOneShotBufferizationOptions getBufferizationOptions() {
 namespace {
 /// Pattern to rewrite tensor.empty to tensor.alloc.
 struct EmptyTensorLoweringPattern : public OpRewritePattern<tensor::EmptyOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::EmptyOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1080,9 +1076,11 @@ transform_dialect::TestGpuVectorDistribution::applyToOne(
   Value laneId =
       gpu::ThreadIdOp::create(rewriter, target.getLoc(), gpu::Dimension::x);
   int64_t subgroupSize = getSubgroupSize();
+  ArrayRef<int64_t> workgroupSize = getWorkgroupSize();
 
   populateGPUDistributionPatterns(patterns);
-  populateGPUDistributeNestedLayoutAttrPatterns(patterns, laneId, subgroupSize);
+  populateGPUDistributeNestedLayoutAttrPatterns(patterns, laneId, subgroupSize,
+                                                workgroupSize);
   populateGPUDistributeNestedLayoutContractAMDGPUPatterns(patterns);
   if (failed(distributeVectorOps(target, patterns, options))) {
     return emitDefaultDefiniteFailure(target);
@@ -1091,52 +1089,6 @@ transform_dialect::TestGpuVectorDistribution::applyToOne(
 }
 
 void transform_dialect::TestGpuVectorDistribution::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  transform::onlyReadsHandle(getTargetMutable(), effects);
-  transform::modifiesPayload(effects);
-}
-
-//===----------------------------------------------------------------------===//
-// TestVectorLayoutAnalysisOp
-//===----------------------------------------------------------------------===//
-
-static void emitLayoutRemarks(VectorLayoutAnalysis &analysis,
-                              mlir::FunctionOpInterface funcOp) {
-  funcOp.walk([&](Operation *op) {
-    // Do not emit remarks for conflict operations.
-    if (isa<VectorExt::ToLayoutOp>(op)) {
-      return;
-    }
-
-    for (OpResult result : op->getOpResults()) {
-      if (auto layout = analysis.getLayout<Attribute>(result)) {
-        // Print layout attr to a string.
-        std::string layoutStr;
-        llvm::raw_string_ostream s(layoutStr);
-        s << layout;
-        // Emit remark.
-        op->emitRemark("layout of result #" + Twine(result.getResultNumber()) +
-                       " is " + s.str());
-      }
-    }
-  });
-}
-
-DiagnosedSilenceableFailure
-transform_dialect::TestVectorLayoutAnalysisOp::applyToOne(
-    transform::TransformRewriter &rewriter, mlir::FunctionOpInterface target,
-    transform::ApplyToEachResultList &results,
-    transform::TransformState &state) {
-  VectorLayoutAnalysis analysis(target);
-  if (failed(analysis.run())) {
-    target.emitError("layout analysis failed");
-    return emitDefaultSilenceableFailure(target);
-  }
-  emitLayoutRemarks(analysis, target);
-  return DiagnosedSilenceableFailure::success();
-}
-
-void transform_dialect::TestVectorLayoutAnalysisOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   transform::onlyReadsHandle(getTargetMutable(), effects);
   transform::modifiesPayload(effects);

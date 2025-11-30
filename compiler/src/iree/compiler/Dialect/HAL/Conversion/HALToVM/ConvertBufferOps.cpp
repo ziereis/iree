@@ -84,7 +84,7 @@ public:
     }
 
     // i32 -> f32, etc
-    if (llvm::isa<FloatType>(targetType)) {
+    if (isa<FloatType>(targetType)) {
       value =
           arith::BitcastOp::create(rewriter, op.getLoc(), targetType, value);
     }
@@ -126,7 +126,7 @@ public:
 
     // f32 -> i32, etc
     auto value = adaptor.getValue();
-    if (llvm::isa<FloatType>(elementType)) {
+    if (isa<FloatType>(elementType)) {
       value = rewriter.createOrFold<arith::BitcastOp>(
           op.getLoc(),
           rewriter.getIntegerType(value.getType().getIntOrFloatBitWidth()),
@@ -180,7 +180,7 @@ private:
 
 struct MemoryTypeOpConversion
     : public OpConversionPattern<IREE::HAL::MemoryTypeOp> {
-  using OpConversionPattern<IREE::HAL::MemoryTypeOp>::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::MemoryTypeOp op,
                   IREE::HAL::MemoryTypeOp::Adaptor adaptor,
@@ -193,7 +193,7 @@ struct MemoryTypeOpConversion
 
 struct BufferUsageOpConversion
     : public OpConversionPattern<IREE::HAL::BufferUsageOp> {
-  using OpConversionPattern<IREE::HAL::BufferUsageOp>::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferUsageOp op,
                   IREE::HAL::BufferUsageOp::Adaptor adaptor,

@@ -79,6 +79,19 @@ def GPULowerToGlobalLoadsPass :
   ];
 }
 
+def GPUConvertToCoalescedDMAPass :
+    InterfacePass<"iree-codegen-gpu-convert-to-coalesced-dma", "mlir::FunctionOpInterface"> {
+  let summary = "Convert operations to coalesced DMA operations.";
+  let dependentDialects = [
+    "::mlir::iree_compiler::IREE::GPU::IREEGPUDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::gpu::GPUDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::vector::VectorDialect"
+  ];
+}
+
 def GPUDistributeForallPass :
     InterfacePass<"iree-codegen-gpu-distribute-forall", "mlir::FunctionOpInterface"> {
   let summary = "Pass to distribute scf.forall ops.";
@@ -334,6 +347,8 @@ def GPUApplyTilingLevelPass :
                          "Tile and fuse all annotated ops to serial loops"),
               clEnumValN(IREE::GPU::TilingLevel::PartialReduction, "partial_reduction",
                          "Tile and fuse all annotated ops to partial reduuction loops"),
+              clEnumValN(IREE::GPU::TilingLevel::Serial, "serial",
+                         "Tile and fuse all annotated ops to serial loops"),
               clEnumValN(IREE::GPU::TilingLevel::Thread, "thread",
                          "Tile and fuse all annotated ops to threads"),
               clEnumValN(IREE::GPU::TilingLevel::Subgroup, "subgroup",
@@ -343,7 +358,9 @@ def GPUApplyTilingLevelPass :
            /*default=*/"true",
            "Allow pad fusion to generate zero size slices">,
     Option<"normalizeLoops", "normalize-loops", "bool", "false",
-           "Enable normalization for scf loops">
+           "Enable normalization for scf loops">,
+    Option<"fuseConsumers", "fuse-consumers", "bool", /*default=*/"true",
+           "Enable fusing consumers into scf.forall during tiling">
   ];
 }
 

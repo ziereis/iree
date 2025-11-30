@@ -28,7 +28,7 @@ namespace mlir::iree_compiler {
 namespace {
 
 struct UpcastContractOutput final : OpRewritePattern<vector::ContractionOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::ContractionOp contractOp,
                                 PatternRewriter &rewriter) const override {
@@ -102,8 +102,9 @@ static void inferMmaKind(vector::ContractionOp contract) {
     return;
   }
 
-  auto intrinsic = dyn_cast_or_null<IREE::Codegen::InnerTileDescAttrInterface>(
-      toLayout.getMmaKindAttr());
+  auto intrinsic =
+      dyn_cast_if_present<IREE::Codegen::InnerTileDescAttrInterface>(
+          toLayout.getMmaKindAttr());
   if (!intrinsic) {
     return;
   }

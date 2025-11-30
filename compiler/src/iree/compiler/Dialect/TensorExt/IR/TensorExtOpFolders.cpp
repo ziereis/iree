@@ -17,11 +17,11 @@ namespace mlir::iree_compiler::IREE::TensorExt {
 
 namespace {
 struct ReplaceBitCastIfTensorOperandEmpty final : OpRewritePattern<BitCastOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(BitCastOp op,
                                 PatternRewriter &rewriter) const override {
     auto emptyOp =
-        dyn_cast_or_null<tensor::EmptyOp>(op.getSource().getDefiningOp());
+        dyn_cast_if_present<tensor::EmptyOp>(op.getSource().getDefiningOp());
     if (!emptyOp)
       return failure();
     rewriter.replaceOpWithNewOp<tensor::EmptyOp>(op, op.getResult().getType(),
@@ -31,7 +31,7 @@ struct ReplaceBitCastIfTensorOperandEmpty final : OpRewritePattern<BitCastOp> {
 };
 
 struct BitCastOfTensorCastStaticInfo final : OpRewritePattern<BitCastOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(BitCastOp bitcastOp,
                                 PatternRewriter &rewriter) const final {
@@ -100,8 +100,8 @@ struct BitCastOfTensorCastStaticInfo final : OpRewritePattern<BitCastOp> {
 }; // namespace
 
 OpFoldResult BitCastOp::fold(FoldAdaptor operands) {
-  auto sourceType = llvm::cast<ShapedType>(getSource().getType());
-  auto resultType = llvm::cast<ShapedType>(getResult().getType());
+  auto sourceType = cast<ShapedType>(getSource().getType());
+  auto resultType = cast<ShapedType>(getResult().getType());
   if (sourceType.getElementType() != resultType.getElementType()) {
     // Element type mismatch, this is a bitcast.
     return {};
@@ -153,7 +153,7 @@ static bool updateTensorOpDims(RewriterBase &rewriter, Operation *op,
 
 struct ReuseDispatchTensorLoadShapeDims
     : public OpRewritePattern<DispatchTensorLoadOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(DispatchTensorLoadOp loadOp,
                                 PatternRewriter &rewriter) const override {
     return success(updateTensorOpDims(rewriter, loadOp, loadOp.getSource(),
@@ -174,10 +174,10 @@ struct ReuseDispatchTensorLoadShapeDims
 // subtensor %v[..] [..] [..]
 struct ConvertDispatchInputLoadOfTensorToSubTensor
     : public OpRewritePattern<DispatchTensorLoadOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(DispatchTensorLoadOp loadOp,
                                 PatternRewriter &rewriter) const override {
-    if (!llvm::isa<RankedTensorType>(loadOp.getSource().getType())) {
+    if (!isa<RankedTensorType>(loadOp.getSource().getType())) {
       return failure();
     }
     // If the offsets are empty rely on folding to take care of it.
@@ -249,7 +249,7 @@ canonicalizeSubViewParts(OpTy op, RankedTensorType sliceType,
 /// Pattern to rewrite a subview op with constant arguments.
 struct DispatchTensorLoadOpWithOffsetSizesAndStridesConstantArgumentFolder final
     : public OpRewritePattern<DispatchTensorLoadOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(DispatchTensorLoadOp loadOp,
                                 PatternRewriter &rewriter) const override {
     SmallVector<OpFoldResult> mixedOffsets, mixedSizes, mixedStrides;
@@ -289,8 +289,7 @@ void DispatchTensorLoadOp::getCanonicalizationPatterns(
 // verification. Fold such uses of the offsets, size and strides are emtpy.
 // i.e, flow.dispatch.input.load %v -> %v
 OpFoldResult DispatchTensorLoadOp::fold(FoldAdaptor operands) {
-  if (getSource().getType() &&
-      llvm::isa<RankedTensorType>(getSource().getType()) &&
+  if (getSource().getType() && isa<RankedTensorType>(getSource().getType()) &&
       getMixedOffsets().empty() && getMixedSizes().empty() &&
       getMixedStrides().empty()) {
     return getSource();
@@ -306,7 +305,7 @@ namespace {
 
 struct ReuseDispatchTensorStoreShapeDims
     : public OpRewritePattern<DispatchTensorStoreOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(DispatchTensorStoreOp storeOp,
                                 PatternRewriter &rewriter) const override {
     return success(updateTensorOpDims(rewriter, storeOp, storeOp.getTarget(),
@@ -316,7 +315,7 @@ struct ReuseDispatchTensorStoreShapeDims
 
 struct FoldCastOpIntoDispatchStoreOp
     : public OpRewritePattern<DispatchTensorStoreOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(DispatchTensorStoreOp storeOp,
                                 PatternRewriter &rewriter) const override {
     auto parentOp = storeOp.getValue().getDefiningOp<tensor::CastOp>();
@@ -349,7 +348,7 @@ struct FoldCastOpIntoDispatchStoreOp
 
 struct DispatchTensorStoreOpWithOffsetSizesAndStridesConstantArgumentFolder
     final : public OpRewritePattern<DispatchTensorStoreOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(DispatchTensorStoreOp storeOp,
                                 PatternRewriter &rewriter) const override {
     SmallVector<OpFoldResult> mixedOffsets, mixedSizes, mixedStrides;
@@ -390,7 +389,7 @@ namespace {
 
 // Bubble up the ordinal ops so that all uses go through this operation.
 struct BubbleUpOrdinalOp : public OpRewritePattern<DispatchWorkloadOrdinalOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(DispatchWorkloadOrdinalOp ordinalOp,
                                 PatternRewriter &rewriter) const override {
     auto blockArg = dyn_cast<BlockArgument>(ordinalOp.getOperand());
@@ -437,7 +436,7 @@ OpFoldResult DispatchWorkloadOrdinalOp::fold(FoldAdaptor operands) {
   //   %2 = iree_tensor_ext.dispatch.workload.ordinal %1, 2
   //
   // This can happen when the operands get deduped.
-  if (auto producerOrdinalOp = dyn_cast_or_null<DispatchWorkloadOrdinalOp>(
+  if (auto producerOrdinalOp = dyn_cast_if_present<DispatchWorkloadOrdinalOp>(
           getOperand().getDefiningOp())) {
     if (producerOrdinalOp.getOrdinal() == getOrdinal()) {
       return producerOrdinalOp.getOperand();
@@ -450,6 +449,32 @@ OpFoldResult DispatchWorkloadOrdinalOp::fold(FoldAdaptor operands) {
 void DispatchWorkloadOrdinalOp::getCanonicalizationPatterns(
     RewritePatternSet &results, MLIRContext *context) {
   results.insert<BubbleUpOrdinalOp>(context);
+}
+
+//===----------------------------------------------------------------------===//
+// iree_tensor_ext.compute_barrier.start
+//===----------------------------------------------------------------------===//
+
+OpFoldResult ComputeBarrierStartOp::fold(FoldAdaptor adaptor) {
+  // Fold duplicate barriers in a chain:
+  // compute_barrier.start(compute_barrier.start(x)) -> compute_barrier.start(x)
+  if (auto producer = getValue().getDefiningOp<ComputeBarrierStartOp>()) {
+    return producer.getResult();
+  }
+  return {};
+}
+
+//===----------------------------------------------------------------------===//
+// iree_tensor_ext.compute_barrier.end
+//===----------------------------------------------------------------------===//
+
+OpFoldResult ComputeBarrierEndOp::fold(FoldAdaptor adaptor) {
+  // Fold duplicate barriers in a chain:
+  // compute_barrier.end(compute_barrier.end(x)) -> compute_barrier.end(x)
+  if (auto producer = getValue().getDefiningOp<ComputeBarrierEndOp>()) {
+    return producer.getResult();
+  }
+  return {};
 }
 
 } // namespace mlir::iree_compiler::IREE::TensorExt

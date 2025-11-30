@@ -166,7 +166,7 @@ public:
   bool isValid() { return true; }
 
   // Gets the type of the buffer being analyzed.
-  MemRefType getType() { return llvm::cast<MemRefType>(buffer.getType()); }
+  MemRefType getType() { return cast<MemRefType>(buffer.getType()); }
 
   // Gets the rank of the buffer being analyzed.
   unsigned getRank() { return getType().getRank(); }
@@ -186,7 +186,7 @@ public:
     builder.setInsertionPointAfterValue(buffer);
 
     Location loc = buffer.getLoc();
-    desc = StridedBufferDescriptor(llvm::cast<MemRefType>(buffer.getType()));
+    desc = StridedBufferDescriptor(cast<MemRefType>(buffer.getType()));
 
     int rank = getType().getRank();
     SmallVector<Type> sizeStrideTypes;
@@ -524,7 +524,7 @@ struct CopyEmitter {
 /// as a vmvx op.
 struct LinalgBinaryGenericConversion
     : public OpRewritePattern<linalg::GenericOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(linalg::GenericOp op,
                                 PatternRewriter &rewriter) const override {
     auto &children = op.getBlock()->getOperations();
@@ -545,9 +545,9 @@ struct LinalgBinaryGenericConversion
       return failure();
     }
     BlockArgument operandScalar0 =
-        llvm::dyn_cast<BlockArgument>(binaryOp->getOperands()[0]);
+        dyn_cast<BlockArgument>(binaryOp->getOperands()[0]);
     BlockArgument operandScalar1 =
-        llvm::dyn_cast<BlockArgument>(binaryOp->getOperands()[1]);
+        dyn_cast<BlockArgument>(binaryOp->getOperands()[1]);
     if (!operandScalar0 || !operandScalar1)
       return failure();
 
@@ -704,7 +704,7 @@ struct LinalgBinaryGenericConversion
 /// as a vmvx op.
 struct LinalgUnaryGenericConversion
     : public OpRewritePattern<linalg::GenericOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(linalg::GenericOp op,
                                 PatternRewriter &rewriter) const override {
     auto &children = op.getBlock()->getOperations();
@@ -725,7 +725,7 @@ struct LinalgUnaryGenericConversion
       return failure();
     }
     BlockArgument operandScalar0 =
-        llvm::dyn_cast<BlockArgument>(unaryOp->getOperands()[0]);
+        dyn_cast<BlockArgument>(unaryOp->getOperands()[0]);
     if (!operandScalar0)
       return failure();
 
@@ -827,7 +827,7 @@ struct LinalgUnaryGenericConversion
 /// operation(s).
 struct LinalgTrivialGenericConversion
     : public OpRewritePattern<linalg::GenericOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(linalg::GenericOp op,
                                 PatternRewriter &rewriter) const override {
     auto &children = op.getBlock()->getOperations();
@@ -843,7 +843,7 @@ struct LinalgTrivialGenericConversion
     Operation &yieldOp = children.front();
     for (auto [outputIndex, yieldOperand] :
          llvm::enumerate(yieldOp.getOperands())) {
-      if (auto blockArg = llvm::dyn_cast<BlockArgument>(yieldOperand)) {
+      if (auto blockArg = dyn_cast<BlockArgument>(yieldOperand)) {
         unsigned inputIndex = blockArg.getArgNumber();
         OpOperand *input = op.getDpsInputOperand(inputIndex);
         OpOperand *output = op.getDpsInitOperand(outputIndex);
@@ -866,7 +866,7 @@ struct LinalgTrivialGenericConversion
 };
 
 struct LinalgFillConversion : public OpRewritePattern<linalg::FillOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   struct OpInfo {
     linalg::FillOp op;
     Value scalar;
@@ -941,7 +941,7 @@ class VMVXLowerLinalgMicrokernelsPass
 
     if (warnOnUnconverted) {
       getOperation()->walk([](Operation *op) {
-        if (llvm::isa<linalg::LinalgOp>(op)) {
+        if (isa<linalg::LinalgOp>(op)) {
           auto diag = op->emitWarning(
               "Linalg op not converted to microkernel and will be implemented "
               "with fallback scalar loops");

@@ -93,7 +93,7 @@ struct ExecutePartitionBuilder {
     operandTypes.reserve(partition->ins.size());
     operandSizes.reserve(partition->ins.size());
     for (auto in : partition->ins) {
-      if (!llvm::isa<IREE::Stream::ResourceType>(in.getType()))
+      if (!isa<IREE::Stream::ResourceType>(in.getType()))
         continue;
       operands.push_back(in);
       operandTypes.push_back(in.getType());
@@ -323,7 +323,7 @@ LogicalResult processRegion(Location loc, MLIRContext *context, Region &region,
 //===----------------------------------------------------------------------===//
 
 struct RemoveBarriers : public OpRewritePattern<IREE::Stream::AsyncBarrierOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::AsyncBarrierOp op,
                                 PatternRewriter &rewriter) const override {
     rewriter.replaceOp(op, op.getOperand(0));

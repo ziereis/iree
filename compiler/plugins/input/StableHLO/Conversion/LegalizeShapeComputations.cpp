@@ -82,7 +82,7 @@ struct HloElementwiseConverter : OpRewritePattern<OpTy> {
 
 struct ConcatenateConverter final
     : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
                                 PatternRewriter &rewriter) const override {
@@ -95,7 +95,7 @@ struct ConcatenateConverter final
     elements.reserve(resultTy.getNumElements());
 
     for (Value operand : op->getOperands()) {
-      ShapedType operandTy = llvm::cast<ShapedType>(operand.getType());
+      ShapedType operandTy = cast<ShapedType>(operand.getType());
       if (operandTy.getRank() == 0) {
         Value extract =
             tensor::ExtractOp::create(rewriter, loc, operand, ValueRange({}));
@@ -117,7 +117,7 @@ struct ConcatenateConverter final
 
 struct GetDimSizeConverter final
     : OpRewritePattern<mlir::stablehlo::GetDimensionSizeOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::GetDimensionSizeOp op,
                                 PatternRewriter &rewriter) const override {
@@ -138,7 +138,7 @@ struct GetDimSizeConverter final
 };
 
 struct ReshapeConverter : OpRewritePattern<mlir::stablehlo::ReshapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ReshapeOp op,
                                 PatternRewriter &rewriter) const override {

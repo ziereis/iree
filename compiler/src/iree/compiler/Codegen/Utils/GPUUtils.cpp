@@ -8,6 +8,7 @@
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
+#include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/Dialect/GPU/TargetUtils/KnownTargets.h"
 #include "iree/compiler/Codegen/Utils/MarkerUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
@@ -100,11 +101,10 @@ getSubgroupIdsAndCounts(mlir::OpBuilder &builder, mlir::Location loc,
 }
 
 bool isDescendingRelativeMappingIndices(ArrayRef<Attribute> array) {
-  int64_t prev =
-      llvm::cast<DeviceMappingAttrInterface>(array[0]).getRelativeIndex();
+  int64_t prev = cast<DeviceMappingAttrInterface>(array[0]).getRelativeIndex();
   for (Attribute attr : array.drop_front()) {
     int64_t relativeIndex =
-        llvm::cast<DeviceMappingAttrInterface>(attr).getRelativeIndex();
+        cast<DeviceMappingAttrInterface>(attr).getRelativeIndex();
     if (relativeIndex != prev - 1) {
       return false;
     }
@@ -430,7 +430,7 @@ static Value warpReduction(Location loc, OpBuilder &builder, Value input,
                            uint32_t numLaneToReduce,
                            bool expandSubgroupReduce) {
   assert(llvm::isPowerOf2_32(numLaneToReduce));
-  assert((llvm::isa<IntegerType, FloatType>(input.getType())) &&
+  assert((isa<IntegerType, FloatType>(input.getType())) &&
          "Input must be a scalar");
   IntegerType shuffleIntType = builder.getIntegerType(kShuffleBitWidth);
   Type origInputType = input.getType();
@@ -528,13 +528,13 @@ static TypedAttr getCombiningKindIdentity(OpBuilder &builder,
   case vector::CombiningKind::MINIMUMF:
   case vector::CombiningKind::MINNUMF: {
     auto posInfApFloat = APFloat::getInf(
-        llvm::cast<FloatType>(type).getFloatSemantics(), /*Negative=*/false);
+        cast<FloatType>(type).getFloatSemantics(), /*Negative=*/false);
     return builder.getFloatAttr(type, posInfApFloat);
   }
   case vector::CombiningKind::MAXIMUMF:
   case vector::CombiningKind::MAXNUMF: {
     auto negInfApFloat = APFloat::getInf(
-        llvm::cast<FloatType>(type).getFloatSemantics(), /*Negative=*/true);
+        cast<FloatType>(type).getFloatSemantics(), /*Negative=*/true);
     return builder.getFloatAttr(type, negInfApFloat);
   }
   }
@@ -544,7 +544,7 @@ static TypedAttr getCombiningKindIdentity(OpBuilder &builder,
 /// Emit identity variable.
 Value getCombiningIdentityValue(Location loc, OpBuilder &builder,
                                 vector::CombiningKind kind, Type identityType) {
-  auto vectorType = llvm::dyn_cast<VectorType>(identityType);
+  auto vectorType = dyn_cast<VectorType>(identityType);
   Type elementType = identityType;
   if (vectorType) {
     elementType = vectorType.getElementType();
@@ -682,7 +682,7 @@ std::optional<SmallVector<int64_t>> getWmmaNativeVectorSize(Operation *op) {
       auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
       if (!extract)
         return std::nullopt;
-      auto vecType = llvm::cast<VectorType>(extract.getResult().getType());
+      auto vecType = cast<VectorType>(extract.getResult().getType());
       if (sliceType && sliceType != vecType)
         return std::nullopt;
       sliceType = vecType;
@@ -690,7 +690,7 @@ std::optional<SmallVector<int64_t>> getWmmaNativeVectorSize(Operation *op) {
     return llvm::to_vector(sliceType.getShape());
   }
   if ((OpTrait::hasElementwiseMappableTraits(op) && op->getNumResults() == 1)) {
-    if (auto vecType = llvm::dyn_cast<VectorType>(op->getResultTypes()[0])) {
+    if (auto vecType = dyn_cast<VectorType>(op->getResultTypes()[0])) {
       // TODO: The condition for unrolling elementwise should be restricted
       // only to operations that need unrolling (connected to the contract).
       if (vecType.getRank() < 2)
@@ -705,7 +705,7 @@ std::optional<SmallVector<int64_t>> getWmmaNativeVectorSize(Operation *op) {
         auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
         if (!extract)
           return std::nullopt;
-        auto vecType = llvm::cast<VectorType>(extract.getResult().getType());
+        auto vecType = cast<VectorType>(extract.getResult().getType());
         if (sliceType && sliceType != vecType)
           return std::nullopt;
         sliceType = vecType;
@@ -814,8 +814,7 @@ std::optional<SmallVector<int64_t>> getMmaNativeVectorSize(Operation *op) {
 
   // Shape of warp-level vector read (load) operation.
   if (auto readOp = dyn_cast<vector::TransferReadOp>(op)) {
-    auto resultVectorType =
-        llvm::cast<VectorType>(readOp.getVector().getType());
+    auto resultVectorType = cast<VectorType>(readOp.getVector().getType());
     Type resultElementType = resultVectorType.getElementType();
 
     std::optional<int> operandId =
@@ -896,7 +895,7 @@ std::optional<SmallVector<int64_t>> getMmaNativeVectorSize(Operation *op) {
           auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
           if (!extract)
             return std::nullopt;
-          auto vecType = llvm::cast<VectorType>(extract.getResult().getType());
+          auto vecType = cast<VectorType>(extract.getResult().getType());
           if (sliceType && sliceType != vecType)
             return std::nullopt;
           sliceType = vecType;
@@ -915,18 +914,18 @@ bool hasGlobalMemoryAddressSpace(MemRefType memrefType) {
   Attribute addrSpace = memrefType.getMemorySpace();
   if (!addrSpace)
     return true;
-  auto intAttr = llvm::dyn_cast<IntegerAttr>(addrSpace);
+  auto intAttr = dyn_cast<IntegerAttr>(addrSpace);
   // Accept both default numeric address space and HAL descriptor type address
   // space--the former is used by LLVMGPU while the latter is used by SPIR-V.
   if (intAttr && intAttr.getInt() == 0)
     return true;
-  auto gpuAttr = llvm::dyn_cast<gpu::AddressSpaceAttr>(addrSpace);
+  auto gpuAttr = dyn_cast<gpu::AddressSpaceAttr>(addrSpace);
   if (gpuAttr && gpuAttr.getValue() == gpu::AddressSpace::Global)
     return true;
-  auto amdgpuAttr = llvm::dyn_cast<amdgpu::AddressSpaceAttr>(addrSpace);
+  auto amdgpuAttr = dyn_cast<amdgpu::AddressSpaceAttr>(addrSpace);
   if (amdgpuAttr && amdgpuAttr.getValue() == amdgpu::AddressSpace::FatRawBuffer)
     return true;
-  return llvm::isa<IREE::HAL::DescriptorTypeAttr>(addrSpace);
+  return isa<IREE::HAL::DescriptorTypeAttr>(addrSpace);
 }
 
 bool hasAMDGPUFatRawBufferAddressSpace(MemRefType memrefType) {
@@ -943,8 +942,8 @@ bool hasAMDGPUFatRawBufferAddressSpace(MemRefType memrefType) {
 }
 
 bool hasSharedMemoryAddressSpace(MemRefType memrefType) {
-  auto addrSpace = llvm::dyn_cast_if_present<gpu::AddressSpaceAttr>(
-      memrefType.getMemorySpace());
+  auto addrSpace =
+      dyn_cast_if_present<gpu::AddressSpaceAttr>(memrefType.getMemorySpace());
   return addrSpace &&
          addrSpace.getValue() == gpu::GPUDialect::getWorkgroupAddressSpace();
 }
@@ -965,6 +964,121 @@ bool sharedMemTransposeFilter(AffineMap indexMap) {
     }
   }
   return false;
+}
+
+//===----------------------------------------------------------------------===//
+// ldmatrix support utilities
+//===----------------------------------------------------------------------===//
+
+std::optional<IREE::GPU::MMAAttr>
+getMmaKindFromUser(vector::TransferReadOp readOp) {
+  // Look through users to find a to_layout op with mma_kind
+  for (Operation *user : readOp->getUsers()) {
+    auto toLayoutOp = dyn_cast<IREE::VectorExt::ToLayoutOp>(user);
+    if (!toLayoutOp)
+      continue;
+
+    Attribute mmaKindAttr = toLayoutOp.getMmaKindAttr();
+    if (!mmaKindAttr)
+      continue;
+
+    if (auto mmaAttr = dyn_cast<IREE::GPU::MMAAttr>(mmaKindAttr)) {
+      return mmaAttr;
+    }
+  }
+  return std::nullopt;
+}
+
+int inferMmaOperandIndex(IREE::VectorExt::NestedLayoutAttr layout,
+                         IREE::GPU::MMAAttr mmaKind) {
+  // Get the expected layouts for LHS and RHS from the MMA kind
+  // For now, we compare thread tiles and element tiles to infer operand type.
+  // This is based on how layouts differ between A and B operands.
+
+  // Get the MMA intrinsic's single subgroup layout for each operand
+  auto lhsLayout =
+      IREE::GPU::getSingleSubgroupLayout(mmaKind, IREE::GPU::kMMAOperandLhs);
+  auto rhsLayout =
+      IREE::GPU::getSingleSubgroupLayout(mmaKind, IREE::GPU::kMMAOperandRhs);
+
+  ArrayRef<int64_t> layoutThreadTile = layout.getThreadTile();
+  ArrayRef<int64_t> layoutElementTile = layout.getElementTile();
+
+  // For rank-2 layouts (M x K for LHS, K x N for RHS):
+  if (layoutThreadTile.size() < 2 || layoutElementTile.size() < 2) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: layout rank < 2, cannot infer operand\n");
+    return -1;
+  }
+
+  // Extract the last two dimensions (the MMA tile dimensions)
+  int64_t rank = layoutThreadTile.size();
+  SmallVector<int64_t, 2> threadTile2D = {layoutThreadTile[rank - 2],
+                                          layoutThreadTile[rank - 1]};
+  SmallVector<int64_t, 2> elementTile2D = {layoutElementTile[rank - 2],
+                                           layoutElementTile[rank - 1]};
+
+  // Compare with LHS layout
+  if (threadTile2D[0] == lhsLayout.thread[0] &&
+      threadTile2D[1] == lhsLayout.thread[1] &&
+      elementTile2D[0] == lhsLayout.element[0] &&
+      elementTile2D[1] == lhsLayout.element[1]) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: inferred LHS operand\n");
+    return IREE::GPU::kMMAOperandLhs;
+  }
+
+  // Compare with RHS layout
+  if (threadTile2D[0] == rhsLayout.thread[0] &&
+      threadTile2D[1] == rhsLayout.thread[1] &&
+      elementTile2D[0] == rhsLayout.element[0] &&
+      elementTile2D[1] == rhsLayout.element[1]) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: inferred RHS operand\n");
+    return IREE::GPU::kMMAOperandRhs;
+  }
+
+  LLVM_DEBUG({
+    DBGS() << "ldmatrix: could not match layout to LHS or RHS\n";
+    DBGS() << "  layout thread=" << threadTile2D[0] << "x" << threadTile2D[1]
+           << ", element=" << elementTile2D[0] << "x" << elementTile2D[1]
+           << "\n";
+    DBGS() << "  lhs thread=" << lhsLayout.thread[0] << "x"
+           << lhsLayout.thread[1] << ", element=" << lhsLayout.element[0] << "x"
+           << lhsLayout.element[1] << "\n";
+    DBGS() << "  rhs thread=" << rhsLayout.thread[0] << "x"
+           << rhsLayout.thread[1] << ", element=" << rhsLayout.element[0] << "x"
+           << rhsLayout.element[1] << "\n";
+  });
+  return -1;
+}
+
+std::optional<LdMatrixParams> getLdMatrixParams(IREE::GPU::MMAAttr mmaKind,
+                                                int operandIndex) {
+  // ldmatrix is only for LHS and RHS operands, not ACC
+  if (operandIndex == IREE::GPU::kMMAOperandAcc) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: ACC operand, not using ldmatrix\n");
+    return std::nullopt;
+  }
+
+  // Get the MMA intrinsic type
+  IREE::GPU::MMAIntrinsic intrinsic = mmaKind.getIntrinsic();
+
+  // For now, only support NV_MMA_SYNC_F32_16x8x16_F16
+  // TODO: Add support for other MMA kinds
+  if (intrinsic != IREE::GPU::MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+    LLVM_DEBUG(DBGS() << "ldmatrix: unsupported MMA intrinsic, only "
+                         "NV_MMA_SYNC_F32_16x8x16_F16 supported\n");
+    return std::nullopt;
+  }
+
+  // NVIDIA mma.sync m16n8k16 with F16
+  // LHS (A): 16x16, uses ldmatrix.x4
+  // RHS (B): 16x8 (stored as K=16 x N=8), uses ldmatrix.x2.trans
+  if (operandIndex == IREE::GPU::kMMAOperandLhs) {
+    return LdMatrixParams{/*numTiles=*/4, /*transpose=*/false,
+                          /*tileM=*/16, /*tileK=*/16};
+  } else {
+    return LdMatrixParams{/*numTiles=*/2, /*transpose=*/true,
+                          /*tileM=*/16, /*tileK=*/8};
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -998,7 +1112,7 @@ IREE::GPU::TargetAttr getCLGPUTarget(MLIRContext *context) {
 }
 
 IREE::GPU::TargetAttr getGPUTargetAttr(DictionaryAttr attr) {
-  return dyn_cast_or_null<IREE::GPU::TargetAttr>(getConfigTargetInfo(attr));
+  return dyn_cast_if_present<IREE::GPU::TargetAttr>(getConfigTargetInfo(attr));
 }
 
 IREE::GPU::TargetAttr getGPUTargetAttr(MLIRContext *context,

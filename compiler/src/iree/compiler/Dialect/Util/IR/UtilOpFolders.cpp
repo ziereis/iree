@@ -12,6 +12,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Matchers.h"
@@ -62,7 +64,7 @@ static LogicalResult canonicalizeAssumeIntOp(AssumeIntOp op,
 
     // Detect whether assumptions need to be normalized or can fold to a single
     // value.
-    ArrayAttr assumptionRow = llvm::cast<ArrayAttr>(assumptions[idx]);
+    ArrayAttr assumptionRow = cast<ArrayAttr>(assumptions[idx]);
     if (assumptionRow.size() > 1) {
       bool allAssumptionsSame = true;
       for (unsigned i = 1; i < assumptionRow.size(); ++i) {
@@ -84,7 +86,7 @@ static LogicalResult canonicalizeAssumeIntOp(AssumeIntOp op,
 
   // Need to rewrite the assumption.
   auto normalizeAssumptions = [](Attribute row, bool &madeChange) {
-    auto rowArray = llvm::cast<ArrayAttr>(row);
+    auto rowArray = cast<ArrayAttr>(row);
     if (rowArray.size() <= 1)
       return rowArray;
 
@@ -207,7 +209,7 @@ namespace {
 
 /// Deduplicates operands, merging assume ranges along the way.
 struct DeduplicateOperands : public OpRewritePattern<AssumeIntOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(AssumeIntOp op,
                                 PatternRewriter &rewriter) const override {
     ArrayAttr assumptions = op.getAssumptions();
@@ -269,7 +271,7 @@ struct DeduplicateOperands : public OpRewritePattern<AssumeIntOp> {
 ///
 /// Where X | Y.
 struct FoldDivMulOfAssume : public OpRewritePattern<arith::MulIOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(arith::MulIOp mulOp,
                                 PatternRewriter &rewriter) const override {
     APInt mulConstantInt;
@@ -330,7 +332,7 @@ OpFoldResult NullOp::fold(FoldAdaptor operands) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult CastOp::fold(FoldAdaptor operands) {
-  if (auto castOp = dyn_cast_or_null<CastOp>(getOperand().getDefiningOp())) {
+  if (auto castOp = dyn_cast_if_present<CastOp>(getOperand().getDefiningOp())) {
     if (castOp.getOperand().getType() == getResult().getType()) {
       return castOp.getOperand();
     }
@@ -343,10 +345,11 @@ namespace {
 /// Folds cast ops into the result of other ops.
 /// Only safe to apply to ops that don't care about their types.
 struct FoldCastIntoNullOp : public OpRewritePattern<CastOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(CastOp castOp,
                                 PatternRewriter &rewriter) const override {
-    auto nullOp = dyn_cast_or_null<NullOp>(castOp.getOperand().getDefiningOp());
+    auto nullOp =
+        dyn_cast_if_present<NullOp>(castOp.getOperand().getDefiningOp());
     if (!nullOp)
       return failure();
     rewriter.replaceOpWithNewOp<NullOp>(castOp, castOp.getResult().getType());
@@ -421,7 +424,7 @@ static OpFoldResult foldRangeOp(Type type, ValueRange operands,
   // If all operands are constant then fold into a constant.
   int64_t value = initialValue;
   for (auto operand : attrOperands) {
-    auto intValue = llvm::dyn_cast_if_present<IntegerAttr>(operand);
+    auto intValue = dyn_cast_if_present<IntegerAttr>(operand);
     if (!intValue)
       return {};
     value = expr(value, intValue.getValue().getSExtValue());
@@ -538,7 +541,7 @@ static Value makeRangeEnd(Location loc, Value offset, Value length,
 namespace {
 
 struct FoldConstantRanges : public OpRewritePattern<RangeExtentsOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(RangeExtentsOp op,
                                 PatternRewriter &rewriter) const override {
     // Build a constant range for all we find and preserve the dynamic pairs.
@@ -601,7 +604,7 @@ struct FoldConstantRanges : public OpRewritePattern<RangeExtentsOp> {
 };
 
 struct ExpandSimpleRangeExtentsOp : public OpRewritePattern<RangeExtentsOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(RangeExtentsOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
@@ -632,7 +635,7 @@ struct ExpandSimpleRangeExtentsOp : public OpRewritePattern<RangeExtentsOp> {
 };
 
 struct DeduplicateRangeExtentsOp : public OpRewritePattern<RangeExtentsOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(RangeExtentsOp op,
                                 PatternRewriter &rewriter) const override {
     // First filter out any pure duplicates. Note SetVector so order is
@@ -780,7 +783,7 @@ OpFoldResult AlignOp::fold(FoldAdaptor operands) {
 
 OpFoldResult SizeOfOp::fold(FoldAdaptor operands) {
   Type t = getSizedType();
-  if (llvm::isa<IntegerType>(t) || llvm::isa<FloatType>(t)) {
+  if (isa<IntegerType>(t) || isa<FloatType>(t)) {
     return IntegerAttr::get(IndexType::get(getContext()),
                             getRoundedElementByteWidth(t));
   }
@@ -819,6 +822,139 @@ OpFoldResult SwitchOp::fold(FoldAdaptor operands) {
 }
 
 //===----------------------------------------------------------------------===//
+// util.scf.unreachable
+//===----------------------------------------------------------------------===//
+
+// Returns true if |op| is directly nested within an SCF region.
+// These regions require an scf.yield terminator.
+static bool inSCFRegion(Operation *op) {
+  Block *block = op->getBlock();
+  Region *region = block->getParent();
+  Operation *parentOp = region ? region->getParentOp() : nullptr;
+  return parentOp && isa<scf::SCFDialect>(parentOp->getDialect());
+}
+
+// Returns true if |op| is directly nested within an SCF region with a single
+// block. These regions require an scf.yield terminator.
+static bool inSingleBlockSCFRegion(Operation *op) {
+  Block *block = op->getBlock();
+  Region *region = block->getParent();
+  Operation *parentOp = region ? region->getParentOp() : nullptr;
+  return parentOp && isa<scf::SCFDialect>(parentOp->getDialect()) &&
+         region->hasOneBlock();
+}
+
+// Converts util.scf.unreachable to util.unreachable when not in an SCF region.
+// This arises during SCF->CFG lowering and we don't control the pass so need
+// to clean up what it produces. It may also be introduced by SCF simplification
+// patterns that are always applied.
+struct ConvertSCFUnreachableToTerminatorOp
+    : public OpRewritePattern<SCFUnreachableOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(SCFUnreachableOp op,
+                                PatternRewriter &rewriter) const override {
+    // Only handle if the parent region is not an SCF operation.
+    // SCF operations (even multi-block ones like scf.execute_region) require
+    // scf.yield as their terminator and cannot use util.unreachable.
+    if (inSCFRegion(op)) {
+      return rewriter.notifyMatchFailure(op, "in scf region");
+    }
+
+    // Not in SCF region or in multi-block region: convert to terminator if at
+    // end of block.
+    Block *block = op->getBlock();
+    if (&block->back() == op.getOperation()) {
+      rewriter.replaceOpWithNewOp<IREE::Util::UnreachableOp>(
+          op, op.getMessageAttr());
+      return success();
+    }
+
+    // Since util.scf.unreachable marks unreachable code we can safely delete
+    // all operations after it even if they have side effects as the code is
+    // unreachable at runtime. If the op produces any results we need to replace
+    // them with poison values in case they escape the block.
+    SmallVector<Operation *> deadOps;
+    for (Operation *nextOp = op->getNextNode(); nextOp;
+         nextOp = nextOp->getNextNode()) {
+      deadOps.push_back(nextOp);
+      rewriter.replaceAllOpUsesWith(
+          nextOp, IREE::Util::SCFUnreachableOp::createPoisonValues(
+                      rewriter, nextOp->getLoc(), nextOp->getResultTypes()));
+    }
+    for (auto *opToErase : deadOps) {
+      rewriter.eraseOp(opToErase);
+    }
+
+    // Convert to terminator.
+    rewriter.replaceOpWithNewOp<IREE::Util::UnreachableOp>(op,
+                                                           op.getMessageAttr());
+    return success();
+  }
+};
+
+// Pattern to handle util.scf.unreachable inside single-block SCF regions by
+// erasing subsequent operations and creating poison values.
+struct SimplifySCFUnreachableInSCFRegionOp
+    : public OpRewritePattern<SCFUnreachableOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(SCFUnreachableOp op,
+                                PatternRewriter &rewriter) const override {
+    // Only handle if the parent region is in an SCF operation.
+    // Multi-block SCF regions (like scf.execute_region with CFG) still require
+    // scf.yield for any terminator that is return-like, so we can't use
+    // util.unreachable there.
+    if (!inSCFRegion(op)) {
+      return rewriter.notifyMatchFailure(op, "not in scf region");
+    }
+
+    // We replace each yielded value with a poison to break the use-def chain
+    // from the producers we are removing. This is only required if they aren't
+    // already poisons.
+    bool didChangeYield = false;
+    if (auto yieldOp = dyn_cast_if_present<scf::YieldOp>(
+            op->getBlock()->getTerminator())) {
+      if (!llvm::all_of(yieldOp->getOperands(), [&](Value operand) {
+            return isa_and_nonnull<ub::PoisonOp>(operand.getDefiningOp());
+          })) {
+        yieldOp->setOperands(IREE::Util::SCFUnreachableOp::createPoisonValues(
+            rewriter, op.getLoc(), yieldOp.getOperandTypes()));
+        didChangeYield = true;
+      }
+    }
+
+    // Find all operations after the unreachable op in the same block, if any.
+    // We need to remove them if they exist (except the terminator/poisons).
+    SmallVector<Operation *> deadOps;
+    for (Operation *nextOp = op->getNextNode();
+         nextOp && !nextOp->hasTrait<OpTrait::IsTerminator>();
+         nextOp = nextOp->getNextNode()) {
+      if (!isa<ub::PoisonOp>(nextOp)) {
+        deadOps.push_back(nextOp);
+      }
+    }
+    if (deadOps.empty()) {
+      return didChangeYield ? success() : failure();
+    }
+
+    // Replace any results with poison values and erase non-terminator
+    // operations.
+    SmallVector<Value> poisonValues;
+    for (auto *deadOp : llvm::reverse(deadOps)) {
+      assert(deadOp->use_empty() && "should have dropped uses");
+      rewriter.eraseOp(deadOp);
+    }
+
+    return success();
+  }
+};
+
+void SCFUnreachableOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                   MLIRContext *context) {
+  results.add<ConvertSCFUnreachableToTerminatorOp>(context);
+  results.add<SimplifySCFUnreachableInSCFRegionOp>(context);
+}
+
+//===----------------------------------------------------------------------===//
 // Compiler hints
 //===----------------------------------------------------------------------===//
 
@@ -826,7 +962,7 @@ namespace {
 
 struct ExpandUnfoldableConstantOp
     : public OpRewritePattern<UnfoldableConstantOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(UnfoldableConstantOp op,
                                 PatternRewriter &rewriter) const override {
     auto stdConst = arith::ConstantOp::create(rewriter, op.getLoc(),
@@ -852,14 +988,16 @@ namespace {
 
 // Deletes empty vm.initializer ops.
 struct DropEmptyInitializerOp : public OpRewritePattern<InitializerOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(InitializerOp op,
                                 PatternRewriter &rewriter) const override {
     if (op.getBody().getBlocks().size() != 1)
       return failure();
     auto &block = op.getBody().front();
-    if (block.empty() || isa<IREE::Util::ReturnOp>(block.front())) {
+    // Empty block or block with only a ReturnLike terminator.
+    if (block.empty() || (block.getOperations().size() == 1 &&
+                          block.front().hasTrait<OpTrait::ReturnLike>())) {
       rewriter.eraseOp(op);
       return success();
     }
@@ -885,7 +1023,7 @@ struct PropagateGlobalLoadAddress : public OpRewritePattern<IndirectOpT> {
   using OpRewritePattern<IndirectOpT>::OpRewritePattern;
   LogicalResult matchAndRewrite(IndirectOpT op,
                                 PatternRewriter &rewriter) const override {
-    if (auto addressOp = dyn_cast_or_null<GlobalAddressOpInterface>(
+    if (auto addressOp = dyn_cast_if_present<GlobalAddressOpInterface>(
             op.getGlobal().getDefiningOp())) {
       rewriter.replaceOpWithNewOp<DirectOpT>(
           op, op.getResult().getType(), addressOp.getGlobalAttr(),
@@ -911,11 +1049,11 @@ namespace {
 /// store back to the same global: we want to be able to elide the entire load
 /// and store.
 struct EraseUnusedGlobalStoreOp : public OpRewritePattern<GlobalStoreOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(GlobalStoreOp op,
                                 PatternRewriter &rewriter) const override {
-    if (auto loadOp = dyn_cast_or_null<GlobalLoadOpInterface>(
+    if (auto loadOp = dyn_cast_if_present<GlobalLoadOpInterface>(
             op.getValue().getDefiningOp())) {
       if (loadOp.getGlobalName() == op.getGlobal()) {
         rewriter.eraseOp(op);
@@ -938,12 +1076,12 @@ namespace {
 /// Turns util.global.address -> util.global.store.indirect into a direct store.
 class PropagateGlobalStoreAddress
     : public OpRewritePattern<GlobalStoreIndirectOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
 public:
   LogicalResult matchAndRewrite(GlobalStoreIndirectOp op,
                                 PatternRewriter &rewriter) const override {
-    if (auto addressOp = dyn_cast_or_null<GlobalAddressOpInterface>(
+    if (auto addressOp = dyn_cast_if_present<GlobalAddressOpInterface>(
             op.getGlobal().getDefiningOp())) {
       rewriter.replaceOpWithNewOp<GlobalStoreOp>(op, op.getValue(),
                                                  addressOp.getGlobalAttr());
@@ -986,7 +1124,7 @@ namespace {
 // Folds subspan -> subspan to point at the original source buffer with an
 // updated range.
 struct FoldBufferSubspanOps : public OpRewritePattern<BufferSubspanOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(BufferSubspanOp op,
                                 PatternRewriter &rewriter) const override {
     auto parentOp = BufferSubspanOp::findSubspanOp(op.getSource());
@@ -1014,7 +1152,7 @@ struct FoldBufferSubspanOps : public OpRewritePattern<BufferSubspanOp> {
 //  util.buffer.copy %src[%new_offset], %dst[%new_offset], %subspan_length
 struct FoldBufferSubspanOpsIntoConsumers
     : public OpRewritePattern<BufferSubspanOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(BufferSubspanOp op,
                                 PatternRewriter &rewriter) const override {
     bool didUpdateAny = false;
@@ -1052,14 +1190,14 @@ struct FoldBufferSubspanOpsIntoConsumers
 //  %subspan = util.buffer.subspan %src[%offset]
 struct SinkSubspanAcrossSelectOps
     : public OpRewritePattern<mlir::arith::SelectOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(mlir::arith::SelectOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!llvm::isa<IREE::Util::BufferType>(op.getType()))
+    if (!isa<IREE::Util::BufferType>(op.getType()))
       return failure();
-    auto trueSubspan = dyn_cast_or_null<IREE::Util::BufferSubspanOp>(
+    auto trueSubspan = dyn_cast_if_present<IREE::Util::BufferSubspanOp>(
         op.getTrueValue().getDefiningOp());
-    auto falseSubspan = dyn_cast_or_null<IREE::Util::BufferSubspanOp>(
+    auto falseSubspan = dyn_cast_if_present<IREE::Util::BufferSubspanOp>(
         op.getFalseValue().getDefiningOp());
     if (!trueSubspan || !falseSubspan)
       return failure();
@@ -1107,7 +1245,7 @@ OpFoldResult BufferSizeOp::fold(FoldAdaptor operands) {
   }
 
   // If the source is a constant then we can calculate that immediately.
-  if (auto constantOp = dyn_cast_or_null<IREE::Util::BufferConstantOp>(
+  if (auto constantOp = dyn_cast_if_present<IREE::Util::BufferConstantOp>(
           operand.getDefiningOp())) {
     if (auto storageAttr = dyn_cast_if_present<IREE::Util::SizedStorageAttr>(
             constantOp.getValue())) {
@@ -1133,7 +1271,7 @@ namespace {
 //  %c = select %cond, %a, %b : !util.buffer
 //  %c_sz = select %cond, %a_sz, %b_sz : index
 struct SelectBufferSizeOp : public OpRewritePattern<BufferSizeOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(BufferSizeOp op,
                                 PatternRewriter &rewriter) const override {
     auto selectOp = op.getOperand().getDefiningOp<mlir::arith::SelectOp>();
@@ -1171,7 +1309,7 @@ namespace {
 //  %storage, %raw_offset = util.buffer.storage %src
 //  %offset = arith.addi %raw_offset, %subspan_offset
 struct FoldSubspansIntoStorageOp : public OpRewritePattern<BufferStorageOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(BufferStorageOp op,
                                 PatternRewriter &rewriter) const override {
     auto subspanOp = BufferSubspanOp::findSubspanOp(op.getOperand());

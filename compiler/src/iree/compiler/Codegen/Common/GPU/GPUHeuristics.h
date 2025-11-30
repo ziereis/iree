@@ -4,6 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include <cstdint>
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
 #include "mlir/IR/Types.h"
 
@@ -22,14 +23,20 @@ struct GPUMatmulShapeType {
   Type cType;
   GemmSize gemmSize = GemmSize::NotSet;
 
-  GPUMatmulShapeType(int64_t m, int64_t n, int64_t k, Type a, Type b, Type c)
+  // Number of horizontally fused operations.
+  // Horizontal fusion: C1,C2 = fused_matmul(A, B1, B2) where A is shared.
+  // Default 1 for regular matmul: C = A @ B.
+  int64_t numHorizontallyFusedOps = 1;
+
+  GPUMatmulShapeType(int64_t m, int64_t n, int64_t k, Type a, Type b, Type c,
+                     int64_t numHorizontallyFusedOps = 1)
       : mSizes({m}), nSizes({n}), kSizes({k}), batchSizes({}), aType(a),
-        bType(b), cType(c) {}
+        bType(b), cType(c), numHorizontallyFusedOps(numHorizontallyFusedOps) {}
   GPUMatmulShapeType(ArrayRef<int64_t> m, ArrayRef<int64_t> n,
                      ArrayRef<int64_t> k, ArrayRef<int64_t> batch, Type a,
-                     Type b, Type c)
+                     Type b, Type c, int64_t numHorizontallyFusedOps = 1)
       : mSizes(m), nSizes(n), kSizes(k), batchSizes(batch), aType(a), bType(b),
-        cType(c) {}
+        cType(c), numHorizontallyFusedOps(numHorizontallyFusedOps) {}
 };
 
 /// Struct containing information about a GPU MMA intrinsic type.
@@ -47,11 +54,11 @@ struct GPUIntrinsicType : public GPUMatmulShapeType {
 /// Struct containing seed tile sizes for GPU MMA heuristics deduction logic.
 struct GPUMMAHeuristicSeeds {
   // The best number of subgroups to use per workgroup
-  int64_t bestSubgroupCountPerWorkgroup;
+  int64_t bestSubgroupCountPerWorkgroup = 0;
   // The best number of total tiles along M*N dimensions per subgroup
-  int64_t bestMNTileCountPerSubgroup;
+  int64_t bestMNTileCountPerSubgroup = 0;
   // The best number of tiles along K dimension per subgroup
-  int64_t bestKTileCountPerSubgroup;
+  int64_t bestKTileCountPerSubgroup = 0;
   // The best number of elements along K dimension per subgroup. This is
   // equivalent to `bestKTileCountPerSubgroup * bestIntrinsic.kSize`, for
   // some chosen intrinsic `bestIntrinsic`.
@@ -61,9 +68,12 @@ struct GPUMMAHeuristicSeeds {
 struct GPUMMASchedule {
   // The MMA intrinsic kind to use for this schedule.
   IREE::Codegen::InnerTileDescAttrInterface mmaKind;
-  int64_t mSize; // Native MMA intrinsic size along M dimension for a subgroup.
-  int64_t nSize; // Native MMA intrinsic size along N dimension for a subgroup.
-  int64_t kSize; // Native MMA intrinsic size along K dimension for a subgroup.
+  // Native MMA intrinsic size along M dimension for a subgroup.
+  int64_t mSize = 0;
+  // Native MMA intrinsic size along N dimension for a subgroup.
+  int64_t nSize = 0;
+  // Native MMA intrinsic size along K dimension for a subgroup.
+  int64_t kSize = 0;
 
   // Number of subgroups along each M and N dimension.
   SmallVector<int64_t> mSubgroupCounts;
@@ -102,14 +112,13 @@ struct GPUMMASchedule {
 
 /// Returns a schedule for using one of the given MMA |intrinsics| to target the
 /// input |problem|. Returns std::nullopt if we cannot find such a schedule.
-FailureOr<GPUMMASchedule>
-deduceMMASchedule(const GPUMatmulShapeType &problem,
-                  ArrayRef<GPUIntrinsicType> intrinsics,
-                  const GPUMMAHeuristicSeeds &seeds,
-                  int64_t sharedMemLimitInBytes, int64_t subgroupSize,
-                  std::optional<int64_t> cuCount, bool transposedLhs = false,
-                  bool transposedRhs = false, bool canUpcastAcc = false,
-                  bool mustBeAligned = true, bool doCPromotion = false);
+FailureOr<GPUMMASchedule> deduceMMASchedule(
+    const GPUMatmulShapeType &problem, ArrayRef<GPUIntrinsicType> intrinsics,
+    const GPUMMAHeuristicSeeds &seeds, int64_t sharedMemLimitInBytes,
+    int64_t subgroupSize, std::optional<int64_t> cuCount,
+    bool transposedLhs = false, bool transposedRhs = false,
+    bool canUpcastAcc = false, bool mustBeAligned = true,
+    bool doCPromotion = false, int64_t splitReductionTripCnt = 0);
 
 /// Returns a schedule for the pvMatmul in attention using one of the given MMA
 /// |intrinsics| to target the given attention matmul problems, |qkMatmul|

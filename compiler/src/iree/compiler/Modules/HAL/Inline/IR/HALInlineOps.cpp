@@ -105,10 +105,10 @@ OpFoldResult BufferStorageOp::fold(FoldAdaptor operands) {
   auto *definingOp = getBuffer().getDefiningOp();
   if (!definingOp)
     return {};
-  if (auto sourceOp =
-          dyn_cast_or_null<IREE::HAL::Inline::BufferAllocateOp>(definingOp)) {
+  if (auto sourceOp = dyn_cast_if_present<IREE::HAL::Inline::BufferAllocateOp>(
+          definingOp)) {
     return sourceOp.getStorage();
-  } else if (auto sourceOp = dyn_cast_or_null<
+  } else if (auto sourceOp = dyn_cast_if_present<
                  IREE::HAL::Inline::BufferAllocateInitializedOp>(definingOp)) {
     return sourceOp.getStorage();
   }
@@ -151,15 +151,15 @@ namespace {
 /// Folds hal_inline.buffer_view.subspans into buffer view creation subspans.
 struct FoldBufferViewCreateSubspan
     : public OpRewritePattern<BufferViewCreateOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(BufferViewCreateOp op,
                                 PatternRewriter &rewriter) const override {
     auto ip = rewriter.saveInsertionPoint();
     rewriter.setInsertionPoint(op);
     bool needsUpdate = false;
     auto newSourceBuffer = op.getSourceBuffer();
-    auto newSourceOffset = llvm::cast<Value>(op.getSourceOffset());
-    if (auto subspanOp = dyn_cast_or_null<BufferSubspanOp>(
+    auto newSourceOffset = cast<Value>(op.getSourceOffset());
+    if (auto subspanOp = dyn_cast_if_present<BufferSubspanOp>(
             op.getSourceBuffer().getDefiningOp())) {
       newSourceBuffer = subspanOp.getSourceBuffer();
       newSourceOffset = rewriter.createOrFold<mlir::arith::AddIOp>(
@@ -199,10 +199,10 @@ namespace {
 /// Skips a hal.buffer_view.buffer accessor when the buffer view was created in
 /// the same scope and we know the origin buffer.
 struct SkipBufferViewBufferOp : public OpRewritePattern<BufferViewBufferOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(BufferViewBufferOp op,
                                 PatternRewriter &rewriter) const override {
-    if (auto createOp = dyn_cast_or_null<BufferViewCreateOp>(
+    if (auto createOp = dyn_cast_if_present<BufferViewCreateOp>(
             op.getBufferView().getDefiningOp())) {
       rewriter.replaceOp(op, createOp.getSourceBuffer());
       return success();
@@ -225,8 +225,7 @@ void BufferViewBufferOp::getCanonicalizationPatterns(RewritePatternSet &results,
 LogicalResult DeviceQueryOp::verify() {
   DeviceQueryOp op = *this;
   if (op.getDefaultValue().has_value()) {
-    if (auto typedDefaultValue =
-            llvm::dyn_cast<TypedAttr>(*op.getDefaultValue())) {
+    if (auto typedDefaultValue = dyn_cast<TypedAttr>(*op.getDefaultValue())) {
       if (typedDefaultValue.getType() != op.getValue().getType()) {
         return op.emitOpError()
                << "type mismatch between result and default value";

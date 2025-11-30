@@ -118,7 +118,7 @@ Value transposeReshape(Value arg, Location loc,
 
 Value processDotArg(Value arg, Location loc, ArrayRef<int64_t> contractDimsAttr,
                     bool outerDimsFirst, PatternRewriter &rewriter) {
-  auto shape = llvm::cast<ShapedType>(arg.getType()).getShape();
+  auto shape = cast<ShapedType>(arg.getType()).getShape();
 
   llvm::SmallVector<bool, 5> isOuterDim;
   isOuterDim.resize(shape.size(), true);
@@ -147,7 +147,7 @@ Value processDotArg(Value arg, Location loc, ArrayRef<int64_t> contractDimsAttr,
 
 struct GeneralDotRemoveBatch final
     : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
                                 PatternRewriter &rewriter) const override {
@@ -211,7 +211,7 @@ struct GeneralDotRemoveBatch final
 
 struct GeneralDotConvert final
     : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   // Attempts to lower a General Dot operator to a standard Dot operator.
   // General dots include batching dimensions and can have collapsing
   // dimensions along any axis. Inserting correctly arrange transpose and
@@ -305,8 +305,8 @@ struct GeneralDotConvert final
         rhs, loc, rhsContractingDims, /*outerDimsFirst=*/false, rewriter));
 
     // Accept only static shaped types.
-    auto lhsShapeType = dyn_cast_or_null<ShapedType>(lhs.getType());
-    auto rhsShapeType = dyn_cast_or_null<ShapedType>(rhs.getType());
+    auto lhsShapeType = dyn_cast_if_present<ShapedType>(lhs.getType());
+    auto rhsShapeType = dyn_cast_if_present<ShapedType>(rhs.getType());
     if (!lhsShapeType || !rhsShapeType)
       return failure();
 
@@ -336,7 +336,7 @@ struct GeneralDotConvert final
 
     auto getDynamicDims = [&](Value arg,
                               llvm::ArrayRef<int64_t> contractingDims) {
-      RankedTensorType ty = llvm::cast<RankedTensorType>(arg.getType());
+      RankedTensorType ty = cast<RankedTensorType>(arg.getType());
       int index = 0;
       for (int64_t contractingDim : contractingDims) {
         for (; index < contractingDim; ++index) {
@@ -382,7 +382,7 @@ struct GeneralDotConvert final
 };
 
 struct DotVectorOptimization final : OpRewritePattern<mlir::stablehlo::DotOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(mlir::stablehlo::DotOp op,
                                 PatternRewriter &rewriter) const override {
     ImplicitLocOpBuilder b(op.getLoc(), rewriter);

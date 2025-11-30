@@ -48,7 +48,7 @@ void insertAlignOps(IREE::Util::AlignOp srcOp,
 }
 
 struct AlignOpConversion : public OpConversionPattern<IREE::Util::AlignOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Util::AlignOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -81,12 +81,12 @@ struct AlignOpConversion : public OpConversionPattern<IREE::Util::AlignOp> {
 /// where it is known.
 struct FixateIndexSizeofConversion
     : public OpConversionPattern<IREE::Util::SizeOfOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Util::SizeOfOp sizeofOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Type sizedType = sizeofOp.getSizedType();
-    if (llvm::isa<IndexType>(sizedType)) {
+    if (isa<IndexType>(sizedType)) {
       Type converted = getTypeConverter()->convertType(sizedType);
       if (converted) {
         Value newSizeof = rewriter.createOrFold<IREE::Util::SizeOfOp>(

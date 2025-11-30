@@ -538,7 +538,7 @@ struct ConvertChannelDefaultOp
 
 struct ConvertChannelSplitOp
     : public OpConversionPattern<IREE::Flow::ChannelSplitOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Flow::ChannelSplitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -550,7 +550,7 @@ struct ConvertChannelSplitOp
 
 struct ConvertChannelRankOp
     : public OpConversionPattern<IREE::Flow::ChannelRankOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Flow::ChannelRankOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -562,7 +562,7 @@ struct ConvertChannelRankOp
 
 struct ConvertChannelCountOp
     : public OpConversionPattern<IREE::Flow::ChannelCountOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Flow::ChannelCountOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -816,7 +816,7 @@ struct ConvertDispatchOp
     for (auto [oldOperand, convertedOperands] :
          llvm::zip_equal(op.getArguments(), adaptor.getArguments())) {
       Value newOperand;
-      if (llvm::isa<ShapedType>(oldOperand.getType())) {
+      if (isa<ShapedType>(oldOperand.getType())) {
         auto newOperandCast =
             transferTensorOperands(op.getLoc(), oldOperand, convertedOperands,
                                    executionAffinityAttr, rewriter);
@@ -840,7 +840,7 @@ struct ConvertDispatchOp
     auto tiedOperandBase = op.getTiedOperandsIndexAndLength().first;
     for (auto result : llvm::enumerate(op.getResults())) {
       auto oldResultType = result.value().getType();
-      if (!llvm::isa<ShapedType>(oldResultType)) {
+      if (!isa<ShapedType>(oldResultType)) {
         resultTypes.push_back(getTypeConverter()->convertType(oldResultType));
         resultEncodings.push_back(rewriter.getType<IREE::Util::UnusedType>());
         continue;
@@ -885,12 +885,12 @@ struct ConvertDispatchOp
 };
 
 struct ConvertFuncOp : public OpConversionPattern<IREE::Flow::FuncOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Flow::FuncOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto convertType = [&](Type type) -> Type {
-      if (llvm::isa<TensorType>(type)) {
+      if (isa<TensorType>(type)) {
         // Tensors become resources without sizes. The default type converter
         // adds the size so we bypass that here. We may want to allow the user
         // to override the lifetime with attributes, too.
@@ -938,7 +938,7 @@ struct ConvertCallOp : public AffinityOpConversionPattern<IREE::Flow::CallOp> {
     for (auto [oldOperand, convertedOperand] :
          llvm::zip_equal(op.getArguments(), adaptor.getArguments())) {
       Value newOperand;
-      if (llvm::isa<ShapedType>(oldOperand.getType())) {
+      if (isa<ShapedType>(oldOperand.getType())) {
         auto newOperandCast =
             transferTensorOperands(op.getLoc(), oldOperand, convertedOperand,
                                    executionAffinityAttr, rewriter);
@@ -962,7 +962,7 @@ struct ConvertCallOp : public AffinityOpConversionPattern<IREE::Flow::CallOp> {
     auto tiedOperandBase = op.getTiedOperandsIndexAndLength().first;
     for (auto result : llvm::enumerate(op.getResults())) {
       auto oldResultType = result.value().getType();
-      if (!llvm::isa<ShapedType>(oldResultType)) {
+      if (!isa<ShapedType>(oldResultType)) {
         resultTypes.push_back(getTypeConverter()->convertType(oldResultType));
         resultSizes.push_back(nullptr);
         continue;
@@ -1062,8 +1062,9 @@ static bool insertBindingOp(BlockArgument arg,
 // this.
 static void convertReturnOps(Region &region) {
   region.walk([](IREE::Flow::ReturnOp oldOp) {
-    OpBuilder(oldOp).create<IREE::Stream::ReturnOp>(oldOp.getLoc(),
-                                                    oldOp.getOperands());
+    OpBuilder builder(oldOp);
+    IREE::Stream::ReturnOp::create(builder, oldOp.getLoc(),
+                                   oldOp.getOperands());
     oldOp.erase();
   });
 }
@@ -1089,7 +1090,7 @@ struct ConvertDispatchWorkgroupInfoOp : public OpConversionPattern<FlowOpT> {
 
 struct ConvertExecutableOp
     : public OpConversionPattern<IREE::Flow::ExecutableOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Flow::ExecutableOp flowOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -1138,8 +1139,7 @@ struct ConvertExecutableOp
         for (auto arg : funcOp.front().getArguments()) {
           auto oldType = arg.getType();
           if (auto tensorType =
-                  llvm::dyn_cast<IREE::TensorExt::DispatchTensorType>(
-                      oldType)) {
+                  dyn_cast<IREE::TensorExt::DispatchTensorType>(oldType)) {
             // Now a binding - insert the stream.binding.subspan op to slice it.
             auto newType = rewriter.getType<IREE::Stream::BindingType>();
             newTypes.push_back(newType);
@@ -1194,7 +1194,7 @@ struct ConvertExecutableOp
 };
 
 struct ConvertReturnOp : public OpConversionPattern<IREE::Flow::ReturnOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Flow::ReturnOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {

@@ -47,6 +47,7 @@ iree_compiler_cc_library(
         "PadLinalgOps.cpp",
         "PadToIntrinsics.cpp",
         "Passes.cpp",
+        "SinkTransposeThroughPad.cpp",
         "TransposeMatmul.cpp",
     ],
     hdrs = [
@@ -66,6 +67,7 @@ iree_compiler_cc_library(
         "//compiler/src/iree/compiler/Dialect/LinalgExt/IR",
         "//compiler/src/iree/compiler/Dialect/Stream/Analysis",
         "//compiler/src/iree/compiler/Dialect/Stream/IR",
+        "//compiler/src/iree/compiler/Dialect/TensorExt/IR",
         "//compiler/src/iree/compiler/Dialect/Util/IR",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AffineDialect",

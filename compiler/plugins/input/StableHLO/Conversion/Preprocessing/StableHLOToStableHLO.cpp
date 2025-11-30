@@ -56,7 +56,7 @@ Value getF32Const(ImplicitLocOpBuilder b, ArrayRef<int64_t> shapes,
 // dim.
 struct ReorderConvOpInputDimensions final
     : OpRewritePattern<mlir::stablehlo::ConvolutionOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConvolutionOp op,
                                 PatternRewriter &rewriter) const override {
@@ -117,7 +117,7 @@ struct ReorderConvOpInputDimensions final
 
 struct ReorderConvOpKernelDimensions final
     : OpRewritePattern<mlir::stablehlo::ConvolutionOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(mlir::stablehlo::ConvolutionOp op,
                                 PatternRewriter &rewriter) const override {
     auto kernel = op.getRhs();
@@ -185,11 +185,11 @@ struct ReorderConvOpKernelDimensions final
 // dim.
 struct ReorderConvOpOutputDimensions final
     : OpRewritePattern<mlir::stablehlo::ConvolutionOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConvolutionOp op,
                                 PatternRewriter &rewriter) const override {
-    auto resultType = llvm::cast<ShapedType>(op.getType());
+    auto resultType = cast<ShapedType>(op.getType());
     auto resultShape = resultType.getShape();
     if (!resultType.hasRank()) {
       return failure();
@@ -270,7 +270,7 @@ bool isConsecutive(ArrayRef<int64_t> array) {
 /// generate a rank-3 dot_general op.
 struct TransposeReshapeGenericDotGeneral final
     : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   Value TransposeIfNonConsecutive(OpBuilder &b, Location loc, Value src,
                                   ArrayRef<int64_t> targetOrder) const {
@@ -295,17 +295,12 @@ struct TransposeReshapeGenericDotGeneral final
         shape.size() - dimsBorder1 <= 1)
       return src;
 
-    SmallVector<int64_t> result_shape = {
-        std::accumulate(shape.begin(), shape.begin() + dimsBorder0, 1,
-                        std::multiplies<int64_t>()),
-        std::accumulate(shape.begin() + dimsBorder0,
-                        shape.begin() + dimsBorder1, 1,
-                        std::multiplies<int64_t>()),
-        std::accumulate(shape.begin() + dimsBorder1, shape.end(), 1,
-                        std::multiplies<int64_t>())};
+    int64_t resultShape[] = {
+        llvm::product_of(shape.take_front(dimsBorder0)),
+        llvm::product_of(shape.slice(dimsBorder0, dimsBorder1 - dimsBorder0)),
+        llvm::product_of(shape.drop_front(dimsBorder1))};
     return mlir::stablehlo::ReshapeOp::create(
-        b, loc, RankedTensorType::get(result_shape, type.getElementType()),
-        src);
+        b, loc, RankedTensorType::get(resultShape, type.getElementType()), src);
   }
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
@@ -449,7 +444,7 @@ struct TransposeReshapeGenericDotGeneral final
 
 struct ScatterInt64Indices final
     : OpRewritePattern<mlir::stablehlo::ScatterOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ScatterOp op,
                                 PatternRewriter &rewriter) const override {
@@ -493,14 +488,14 @@ struct ScatterInt64Indices final
 // an explicit dim.
 struct ScatterImplicitIndex final
     : OpRewritePattern<mlir::stablehlo::ScatterOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ScatterOp op,
                                 PatternRewriter &rewriter) const override {
     auto dimNumbers = op.getScatterDimensionNumbers();
     auto indexVectorDim = dimNumbers.getIndexVectorDim();
     Value indices = op.getScatterIndices();
-    auto indicesTy = llvm::cast<ShapedType>(indices.getType());
+    auto indicesTy = cast<ShapedType>(indices.getType());
 
     // Check indices vector has an implicit dim.
     if (indexVectorDim != indicesTy.getRank()) {
@@ -537,7 +532,7 @@ struct ScatterImplicitIndex final
 
 struct ScatterImplicitBatch final
     : OpRewritePattern<mlir::stablehlo::ScatterOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   static Value addUnitBatchDim(Location loc, Value value,
                                PatternRewriter &rewriter) {
@@ -566,8 +561,8 @@ struct ScatterImplicitBatch final
                                 PatternRewriter &rewriter) const override {
     auto dimNumbers = op.getScatterDimensionNumbers();
     auto indexVectorDim = dimNumbers.getIndexVectorDim();
-    auto indices = llvm::cast<Value>(op.getScatterIndices());
-    auto indicesTy = llvm::dyn_cast<RankedTensorType>(indices.getType());
+    auto indices = cast<Value>(op.getScatterIndices());
+    auto indicesTy = dyn_cast<RankedTensorType>(indices.getType());
 
     // Check whether indices has no batch dimension.
     if (!indicesTy)
@@ -620,7 +615,7 @@ struct ScatterImplicitBatch final
 
 struct ScatterCollapseBatch final
     : OpRewritePattern<mlir::stablehlo::ScatterOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   static Value collapseBatchDims(Location loc, Value value, int64_t batchCount,
                                  PatternRewriter &rewriter) {
@@ -654,8 +649,8 @@ struct ScatterCollapseBatch final
                                 PatternRewriter &rewriter) const override {
     auto dimNumbers = op.getScatterDimensionNumbers();
     auto indexVectorDim = dimNumbers.getIndexVectorDim();
-    auto indices = llvm::cast<Value>(op.getScatterIndices());
-    auto indicesTy = llvm::cast<ShapedType>(indices.getType());
+    auto indices = cast<Value>(op.getScatterIndices());
+    auto indicesTy = cast<ShapedType>(indices.getType());
     auto updatedWindowDims = dimNumbers.getUpdateWindowDims();
 
     if (!indicesTy.hasRank()) {
@@ -722,7 +717,7 @@ struct ScatterCollapseBatch final
 // Ensure the batch dimensions of both the indices and updates are the first
 // dimensions. If they are not, transpose them to the start.
 struct ScatterBatchFirst final : OpRewritePattern<mlir::stablehlo::ScatterOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ScatterOp op,
                                 PatternRewriter &rewriter) const override {
@@ -732,7 +727,7 @@ struct ScatterBatchFirst final : OpRewritePattern<mlir::stablehlo::ScatterOp> {
     // If the index vector dim is not implicitly or explicitly at the end
     // we need to transpose the batch dimensions to the start.
     Value indices = op.getScatterIndices();
-    auto indicesTy = llvm::cast<ShapedType>(indices.getType());
+    auto indicesTy = cast<ShapedType>(indices.getType());
     auto indexVectorDim = dimNumbers.getIndexVectorDim();
     if (indexVectorDim < indicesTy.getRank() - 1) {
       llvm::SmallVector<int64_t> perm;
@@ -753,7 +748,7 @@ struct ScatterBatchFirst final : OpRewritePattern<mlir::stablehlo::ScatterOp> {
       indices = mlir::stablehlo::TransposeOp::create(
           builder, indicesTy.clone(newShape), indices,
           builder.getDenseI64ArrayAttr(perm));
-      indicesTy = llvm::cast<RankedTensorType>(indices.getType());
+      indicesTy = cast<RankedTensorType>(indices.getType());
       indexVectorDim = indicesTy.getRank() - 1;
     }
 
@@ -761,7 +756,7 @@ struct ScatterBatchFirst final : OpRewritePattern<mlir::stablehlo::ScatterOp> {
     // the beginning.
     auto updates = op.getUpdates();
     auto updates0 = updates.front();
-    auto updates0Ty = llvm::cast<ShapedType>(updates0.getType());
+    auto updates0Ty = cast<ShapedType>(updates0.getType());
     auto updatedWindowDims = dimNumbers.getUpdateWindowDims();
 
     // Determine which dimensions are batch dimensions.
@@ -789,7 +784,7 @@ struct ScatterBatchFirst final : OpRewritePattern<mlir::stablehlo::ScatterOp> {
     llvm::SmallVector<Value> newUpdates(updates.begin(), updates.end());
     if (updatesChanged) {
       for (Value &update : newUpdates) {
-        auto updateTy = llvm::cast<ShapedType>(update.getType());
+        auto updateTy = cast<ShapedType>(update.getType());
         llvm::SmallVector<int64_t> newShape;
         newShape.reserve(updateTy.getRank());
         for (int i = 0, s = updatePerm.size(); i < s; i++)
@@ -852,14 +847,14 @@ struct ScatterBatchFirst final : OpRewritePattern<mlir::stablehlo::ScatterOp> {
 //  return %0 : tensor<5x4x1xi32>
 struct ScatterMaterializeInsertedDim final
     : OpRewritePattern<mlir::stablehlo::ScatterOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ScatterOp op,
                                 PatternRewriter &rewriter) const override {
     auto indices = op.getScatterIndices();
     auto operand = op.getInputs().front();
-    auto indicesTy = llvm::cast<ShapedType>(indices.getType());
-    auto operandTy = llvm::cast<ShapedType>(operand.getType());
+    auto indicesTy = cast<ShapedType>(indices.getType());
+    auto operandTy = cast<ShapedType>(operand.getType());
 
     if (!operandTy.hasRank() || !indicesTy.hasRank()) {
       return rewriter.notifyMatchFailure(op, "operand/indices have no rank");
@@ -922,7 +917,7 @@ struct ScatterMaterializeInsertedDim final
 
     llvm::SmallVector<Value> expandedUpdates;
     for (auto update : op.getUpdates()) {
-      auto updatesTy = llvm::cast<ShapedType>(update.getType());
+      auto updatesTy = cast<ShapedType>(update.getType());
 
       llvm::SmallVector<int64_t> newShape;
       for (int i = 0, s = reassociationMap.size(); i < s; ++i) {
@@ -971,7 +966,7 @@ bool isFromBool(Value val) {
       return false;
 
     if (auto convertOp = dyn_cast<mlir::stablehlo::ConvertOp>(op)) {
-      auto inTy = llvm::cast<ShapedType>(convertOp.getOperand().getType());
+      auto inTy = cast<ShapedType>(convertOp.getOperand().getType());
       if (inTy.getElementType().isInteger(1)) {
         return true;
       }
@@ -993,7 +988,7 @@ bool isFromBool(Value val) {
 // Mul of non-finite values (e.g. NaN, inf) and 0.0 produce 0.0 in StableHLO.
 // For linalg we need to convert these to select operations.
 struct MulCastOfBool final : OpRewritePattern<mlir::stablehlo::MulOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::MulOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1048,7 +1043,7 @@ struct MulCastOfBool final : OpRewritePattern<mlir::stablehlo::MulOp> {
 // Generates Gaussian noise with uniform random generator based on Box-Muller
 // transform.
 struct ExpandRngNormal final : OpRewritePattern<mlir::stablehlo::RngOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::RngOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1220,8 +1215,8 @@ struct FuseWidenOperands final : OpRewritePattern<Op> {
                                 PatternRewriter &rewriter) const override {
     llvm::SmallVector<Value> operands;
     for (Value operand : op->getOperands()) {
-      auto convertOp =
-          dyn_cast_or_null<mlir::stablehlo::ConvertOp>(operand.getDefiningOp());
+      auto convertOp = dyn_cast_if_present<mlir::stablehlo::ConvertOp>(
+          operand.getDefiningOp());
       if (convertOp) {
         auto inputType = getElementTypeOrSelf(convertOp.getOperand().getType());
         auto castedType = getElementTypeOrSelf(convertOp.getResult().getType());
@@ -1253,7 +1248,7 @@ struct FuseWidenOperands final : OpRewritePattern<Op> {
 };
 
 struct DotToMul final : OpRewritePattern<mlir::stablehlo::DotOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DotOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1327,7 +1322,7 @@ struct DotToMul final : OpRewritePattern<mlir::stablehlo::DotOp> {
 // number of i32 outputs, then BitcastConvert to return f32.
 struct RngBitcastFloat final
     : OpRewritePattern<mlir::stablehlo::RngBitGeneratorOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::RngBitGeneratorOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1362,7 +1357,7 @@ struct RngBitcastFloat final
 };
 
 struct ZeroConcat final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::ConcatenateOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1396,7 +1391,7 @@ struct ZeroConcat final : OpRewritePattern<mlir::stablehlo::ConcatenateOp> {
 // can be represented using a mul operation. This includes possibly making
 // an implicit cast explicit prior the mul.
 struct DotGeneralIsMul final : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::DotGeneralOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1467,13 +1462,13 @@ struct DotGeneralIsMul final : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
         builder,
         RankedTensorType::get(lhsTransposeShape, lhsTy.getElementType()), lhs,
         builder.getDenseI64ArrayAttr(permLhs));
-    lhsTy = llvm::cast<RankedTensorType>(lhs.getType());
+    lhsTy = cast<RankedTensorType>(lhs.getType());
 
     rhs = mlir::stablehlo::TransposeOp::create(
         builder,
         RankedTensorType::get(rhsTransposeShape, rhsTy.getElementType()), rhs,
         builder.getDenseI64ArrayAttr(permRhs));
-    rhsTy = llvm::cast<RankedTensorType>(rhs.getType());
+    rhsTy = cast<RankedTensorType>(rhs.getType());
 
     auto dimI32Ty = RankedTensorType::get({1}, builder.getI32Type());
 
@@ -1555,7 +1550,7 @@ struct DotGeneralIsMul final : OpRewritePattern<mlir::stablehlo::DotGeneralOp> {
 // TODO(suderman): Move this to solve code.
 struct CustomCallIsTopK final
     : OpRewritePattern<mlir::stablehlo::CustomCallOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::CustomCallOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1664,7 +1659,7 @@ struct CustomCallIsTopK final
 // broadcasts where the last dimension of the iota is preserved throughout.
 bool isIotaOrIotaBroadcast(PatternRewriter &rewriter, Value input) {
   if (auto iotaOp =
-          dyn_cast_or_null<mlir::stablehlo::IotaOp>(input.getDefiningOp())) {
+          dyn_cast_if_present<mlir::stablehlo::IotaOp>(input.getDefiningOp())) {
     int64_t iotaDim = iotaOp.getIotaDimension();
     auto iotaLastDim = cast<ShapedType>(iotaOp.getType()).getRank() - 1;
     if (iotaDim == iotaLastDim) {
@@ -1675,7 +1670,7 @@ bool isIotaOrIotaBroadcast(PatternRewriter &rewriter, Value input) {
     return false;
   }
 
-  if (auto broadcastOp = dyn_cast_or_null<mlir::stablehlo::BroadcastInDimOp>(
+  if (auto broadcastOp = dyn_cast_if_present<mlir::stablehlo::BroadcastInDimOp>(
           input.getDefiningOp())) {
     auto broadcastLastDim =
         cast<ShapedType>(broadcastOp.getType()).getRank() - 1;
@@ -1691,7 +1686,7 @@ bool isIotaOrIotaBroadcast(PatternRewriter &rewriter, Value input) {
 }
 
 struct IotaSortSliceIsTopK final : OpRewritePattern<mlir::stablehlo::SortOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::SortOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1775,7 +1770,7 @@ struct IotaSortSliceIsTopK final : OpRewritePattern<mlir::stablehlo::SortOp> {
 
 // TODO(suderman): Move this to solve code.
 struct ApproxTopK final : OpRewritePattern<mlir::stablehlo::CustomCallOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::CustomCallOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1799,8 +1794,8 @@ struct ApproxTopK final : OpRewritePattern<mlir::stablehlo::CustomCallOp> {
     auto input = op.getOperand(0);
     auto iota = op.getOperand(1);
 
-    if (auto iotaOp =
-            dyn_cast_or_null<mlir::stablehlo::IotaOp>(iota.getDefiningOp())) {
+    if (auto iotaOp = dyn_cast_if_present<mlir::stablehlo::IotaOp>(
+            iota.getDefiningOp())) {
       int64_t iotaDim = iotaOp.getIotaDimension();
       auto iotaLastDim = cast<ShapedType>(iotaOp.getType()).getRank() - 1;
       if (iotaDim != iotaLastDim) {

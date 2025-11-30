@@ -49,7 +49,7 @@ namespace {
 
 struct ConvertHalInterfaceBindingSubspan final
     : OpConversionPattern<IREE::HAL::InterfaceBindingSubspanOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(IREE::HAL::InterfaceBindingSubspanOp op, OpAdaptor adaptor,
@@ -78,7 +78,7 @@ struct ConvertHalInterfaceBindingSubspan final
 /// there's a type conversion, we drop the assumptions.
 struct ConvertUtilAssumeIntOp final
     : OpConversionPattern<IREE::Util::AssumeIntOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(IREE::Util::AssumeIntOp op, OpAdaptor adaptor,
@@ -137,7 +137,7 @@ struct ConvertUtilAssumeIntOp final
 
 // Tries to flatten `type` to a 1-D vector type. Returns `nullptr` on failure.
 static VectorType flattenVectorType(Type type) {
-  auto vecTy = llvm::dyn_cast<VectorType>(type);
+  auto vecTy = dyn_cast<VectorType>(type);
   if (!vecTy)
     return nullptr;
 

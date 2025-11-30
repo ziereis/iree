@@ -36,7 +36,7 @@ static Value getAsIndexValue(OpFoldResult attrOrValue, OpBuilder &builder,
       return val;
     matchPattern(val, m_Constant(&attr));
   } else {
-    attr = llvm::cast<IntegerAttr>(cast<Attribute>(attrOrValue));
+    attr = cast<IntegerAttr>(cast<Attribute>(attrOrValue));
   }
   return builder.createOrFold<arith::ConstantIndexOp>(
       loc, attr.getValue().getSExtValue());
@@ -47,7 +47,7 @@ namespace {
 /// Concretizes tensor.pad op's result shape if its source op implements
 /// OffsetSizeAndStrideOpInterface. For example, pad(extract_slice).
 struct ConcretizePadResultShape final : public OpRewritePattern<tensor::PadOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::PadOp padOp,
                                 PatternRewriter &rewriter) const override {
@@ -59,7 +59,7 @@ struct ConcretizePadResultShape final : public OpRewritePattern<tensor::PadOp> {
     SmallVector<int64_t> staticShape;
     staticShape.reserve(rank);
 
-    auto sourceIfxOp = dyn_cast_or_null<OffsetSizeAndStrideOpInterface>(
+    auto sourceIfxOp = dyn_cast_if_present<OffsetSizeAndStrideOpInterface>(
         padOp.getSource().getDefiningOp());
     if (!sourceIfxOp)
       return failure();

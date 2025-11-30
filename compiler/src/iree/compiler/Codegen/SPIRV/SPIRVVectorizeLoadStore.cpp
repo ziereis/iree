@@ -160,8 +160,8 @@ static unsigned isMemRefVectorizable(Value value,
   auto memrefType = dyn_cast<MemRefType>(value.getType());
 
   // Require scalar element type
-  if (!memrefType || (!llvm::isa<IntegerType>(memrefType.getElementType()) &&
-                      !llvm::isa<FloatType>(memrefType.getElementType()))) {
+  if (!memrefType || (!isa<IntegerType>(memrefType.getElementType()) &&
+                      !isa<FloatType>(memrefType.getElementType()))) {
     LLVM_DEBUG(llvm::dbgs() << "failed: not (scalar) memref\n");
     return 0;
   }
@@ -554,7 +554,7 @@ MemRefConversionPattern<OpTy>::getVectorizedMemRefType(
   // If the vector we need to generate is bigger than the the max vector size
   // allowed for loads use a larger element type.
   if (vectorNumElements > kMaxVectorNumElements) {
-    scalarType = llvm::isa<IntegerType>(scalarType)
+    scalarType = isa<IntegerType>(scalarType)
                      ? cast<Type>(rewriter.getI32Type())
                      : cast<Type>(rewriter.getF32Type());
     scalarNumBits = scalarType.getIntOrFloatBitWidth();
@@ -798,7 +798,7 @@ static Value predicateMaybeMaskedScalarTransfer(
 /// if any of the memory access is not vector.
 struct ScalarizeVectorTransferRead final
     : public OpRewritePattern<vector::TransferReadOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::TransferReadOp readOp,
                                 PatternRewriter &rewriter) const override {
@@ -878,7 +878,7 @@ struct ScalarizeVectorTransferRead final
 };
 
 struct ScalarizeVectorLoad final : public OpRewritePattern<vector::LoadOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::LoadOp loadOp,
                                 PatternRewriter &rewriter) const override {
@@ -923,7 +923,7 @@ struct ScalarizeVectorLoad final : public OpRewritePattern<vector::LoadOp> {
 
 struct ScalarizeVectorTransferWrite final
     : public OpRewritePattern<vector::TransferWriteOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::TransferWriteOp writeOp,
                                 PatternRewriter &rewriter) const override {
@@ -1007,7 +1007,7 @@ struct ScalarizeVectorTransferWrite final
 /// operations.
 struct ReifyExtractOfCreateMask final
     : public OpRewritePattern<vector::ExtractOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::ExtractOp extractOp,
                                 PatternRewriter &rewriter) const override {

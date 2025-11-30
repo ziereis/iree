@@ -13,6 +13,7 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/AMDGPU/IR/AMDGPUDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -28,10 +29,12 @@ namespace mlir::iree_compiler {
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h.inc"
 
 ContractionVectorLayoutOptions::ContractionVectorLayoutOptions(
-    Operation *root, Value laneId, int64_t subgroupSize)
+    Operation *root, Value laneId, int64_t subgroupSize,
+    ArrayRef<int64_t> workgroupSize)
     : VectorLayoutOptions(root), patterns(root->getContext()) {
   populateGPUDistributionPatterns(patterns);
-  populateGPUDistributeNestedLayoutAttrPatterns(patterns, laneId, subgroupSize);
+  populateGPUDistributeNestedLayoutAttrPatterns(patterns, laneId, subgroupSize,
+                                                workgroupSize);
   populateGPUDistributeNestedLayoutContractAMDGPUPatterns(patterns);
 }
 
@@ -58,6 +61,8 @@ struct LLVMGPUVectorDistributePass final
     registry.insert<affine::AffineDialect>();
     registry.insert<amdgpu::AMDGPUDialect>();
     registry.insert<gpu::GPUDialect>();
+    registry.insert<nvgpu::NVGPUDialect>();
+    registry.insert<scf::SCFDialect>();
   }
 
   void runOnOperation() override {
@@ -66,9 +71,9 @@ struct LLVMGPUVectorDistributePass final
     std::array<int64_t, 3> workgroupSize;
     if (funcOp->hasAttr("workgroup_size")) {
       auto tmpSizes =
-          llvm::cast<ArrayAttr>(funcOp->getAttr("workgroup_size")).getValue();
+          cast<ArrayAttr>(funcOp->getAttr("workgroup_size")).getValue();
       for (auto [i, size] : llvm::enumerate(tmpSizes)) {
-        workgroupSize[i] = llvm::cast<IntegerAttr>(size).getInt();
+        workgroupSize[i] = cast<IntegerAttr>(size).getInt();
       }
     } else {
       std::optional<SmallVector<int64_t>> maybeWorkgroupSize =
@@ -108,7 +113,7 @@ struct LLVMGPUVectorDistributePass final
     }
 
     ContractionVectorLayoutOptions options(funcOp, linearThreadIdVal,
-                                           subgroupSize.value());
+                                           subgroupSize.value(), workgroupSize);
 
     if (failed(distributeVectorOps(funcOp, options.getPatterns(), options))) {
       funcOp->emitOpError() << "failed to distribute";

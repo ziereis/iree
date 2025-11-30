@@ -39,7 +39,8 @@ lookupDevicesAndQueueAffintiesFor(Operation *op, OpBuilder &builder) {
   auto affinityAttr = IREE::Stream::AffinityAttr::lookupOrDefault(op);
   SmallVector<Value> devices;
   SmallVector<Value> queueAffinities;
-  if (auto optimalAttr = dyn_cast<IREE::HAL::DeviceOptimalAttr>(affinityAttr)) {
+  if (auto optimalAttr =
+          dyn_cast_if_present<IREE::HAL::DeviceOptimalAttr>(affinityAttr)) {
     for (auto affinity : optimalAttr.getAffinities()) {
       auto [device, queueAffinity] =
           lookupDeviceAndQueueAffinityFor(op->getLoc(), affinity, builder);
@@ -124,7 +125,7 @@ static Value consumeBoundFence(Value timepoint, PatternRewriter &rewriter) {
     return nullptr; // non-export use
   assert(!chainOp.getExternalValues().empty());
   auto fence = chainOp.getExternalValues().front();
-  if (!fence || !llvm::isa<IREE::HAL::FenceType>(fence.getType()))
+  if (!fence || !isa<IREE::HAL::FenceType>(fence.getType()))
     return nullptr;
 
   // Try really hard to figure out if the fence can be used. A larger analysis

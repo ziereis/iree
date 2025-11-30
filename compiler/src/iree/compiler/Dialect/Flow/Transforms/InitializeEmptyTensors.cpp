@@ -21,10 +21,10 @@ namespace mlir::iree_compiler::IREE::Flow {
 /// Returns failure, when the type is not handled.
 static FailureOr<TypedAttr> getZero(OpBuilder &builder, Location loc,
                                     Type elementType) {
-  if (auto intType = llvm::dyn_cast<IntegerType>(elementType)) {
+  if (auto intType = dyn_cast<IntegerType>(elementType)) {
     return cast<TypedAttr>(builder.getIntegerAttr(intType, 0));
   }
-  if (auto floatType = llvm::dyn_cast<FloatType>(elementType)) {
+  if (auto floatType = dyn_cast<FloatType>(elementType)) {
     return cast<TypedAttr>(builder.getFloatAttr(floatType, 0.0));
   }
   return failure();
@@ -43,7 +43,7 @@ namespace {
 
 /// Converts an tensor.empty() op to `flow.tensor.splat` op.
 struct RewriteTensorEmptyToSplat : public OpRewritePattern<tensor::EmptyOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(tensor::EmptyOp emptyTensorOp,
                                 PatternRewriter &rewriter) const override {
     if (!shouldBeConvertedToFlowTensorOp(emptyTensorOp)) {
@@ -67,7 +67,7 @@ struct RewriteTensorEmptyToSplat : public OpRewritePattern<tensor::EmptyOp> {
 
 /// Converts an tensor.empty() op to `flow.tensor.empty` op.
 struct RewriteTensorEmptyToEmpty : public OpRewritePattern<tensor::EmptyOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(tensor::EmptyOp emptyTensorOp,
                                 PatternRewriter &rewriter) const override {
     if (!shouldBeConvertedToFlowTensorOp(emptyTensorOp)) {

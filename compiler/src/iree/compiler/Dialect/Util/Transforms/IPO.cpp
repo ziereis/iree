@@ -242,7 +242,7 @@ static FuncAnalysis analyzeFuncOp(IREE::Util::FuncOp funcOp,
 
       // If the result value is an argument track that here.
       // We'll only use this value if all return sites are uniform.
-      if (auto arg = llvm::dyn_cast<BlockArgument>(value)) {
+      if (auto arg = dyn_cast<BlockArgument>(value)) {
         if (arg.getParentBlock()->isEntryBlock()) {
           analysis.passthroughResultArgs[i] =
               static_cast<int>(arg.getArgNumber());
@@ -381,7 +381,7 @@ static FuncAnalysis analyzeFuncOp(IREE::Util::FuncOp funcOp,
     auto arg = funcOp.getArgument(argIndex);
     bool onlyReturnUsers = true;
     for (auto user : arg.getUsers()) {
-      if (!isa<IREE::Util::ReturnOp>(user)) {
+      if (!user->hasTrait<OpTrait::ReturnLike>()) {
         onlyReturnUsers = false;
         break;
       }
@@ -617,8 +617,10 @@ static bool applyCallChanges(FuncAnalysis &analysis,
 
   // Fully replace call op because we may have changed result count.
   // TODO(benvanik): update tied operands, arg_attrs, and res_attrs.
-  auto newCallOp = OpBuilder(callOp).create<IREE::Util::CallOp>(
-      callOp.getLoc(), newResultTypes, callOp.getCalleeAttr(), newOperands,
+  OpBuilder newCallBuilder(callOp);
+  auto newCallOp = IREE::Util::CallOp::create(
+      newCallBuilder, callOp.getLoc(), newResultTypes, callOp.getCalleeAttr(),
+      newOperands,
       /*tied_operands=*/ArrayAttr{},
       /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr);
   newCallOp->setDialectAttrs(callOp->getDialectAttrs());

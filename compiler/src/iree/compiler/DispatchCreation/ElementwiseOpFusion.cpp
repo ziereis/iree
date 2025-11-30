@@ -57,12 +57,12 @@ static SmallVector<T> applyProjectedPermutation(const SmallVectorImpl<T> &input,
 // is not affine (index values come from a tensor).
 namespace {
 struct GatherFusionPattern final : public OpRewritePattern<tensor::ExtractOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(tensor::ExtractOp extractOp,
                                 PatternRewriter &rewriter) const override {
     // Check if extractOp is inside a generic op
     auto consumerOp =
-        dyn_cast_or_null<linalg::GenericOp>(extractOp->getParentOp());
+        dyn_cast_if_present<linalg::GenericOp>(extractOp->getParentOp());
     if (!consumerOp) {
       return rewriter.notifyMatchFailure(
           extractOp, "expected extract op to be inside a generic op");

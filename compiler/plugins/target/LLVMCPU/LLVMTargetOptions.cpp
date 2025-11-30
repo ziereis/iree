@@ -199,7 +199,7 @@ LLVMTarget::loadFromConfigAttr(Location loc, DictionaryAttr config,
   auto getString = [&](StringRef name, StringRef fallback,
                        bool required) -> StringRef {
     Attribute attr = config.get(name);
-    if (auto sattr = llvm::dyn_cast_if_present<StringAttr>(attr)) {
+    if (auto sattr = dyn_cast_if_present<StringAttr>(attr)) {
       return sattr.strref();
     } else {
       if (required) {
@@ -212,7 +212,7 @@ LLVMTarget::loadFromConfigAttr(Location loc, DictionaryAttr config,
   };
   auto getOptionalString = [&](StringRef name) -> std::optional<StringRef> {
     Attribute attr = config.get(name);
-    if (auto sattr = llvm::dyn_cast_if_present<StringAttr>(attr)) {
+    if (auto sattr = dyn_cast_if_present<StringAttr>(attr)) {
       return sattr.strref();
     } else if (attr) {
       hasFailures = true;
@@ -223,7 +223,7 @@ LLVMTarget::loadFromConfigAttr(Location loc, DictionaryAttr config,
   };
   auto getBool = [&](StringRef name, bool fallback) -> bool {
     Attribute attr = config.get(name);
-    if (auto battr = llvm::dyn_cast_if_present<BoolAttr>(attr)) {
+    if (auto battr = dyn_cast_if_present<BoolAttr>(attr)) {
       return battr.getValue();
     } else if (attr) {
       hasFailures = true;
@@ -387,8 +387,8 @@ void LLVMTarget::populateDefaultsFromTargetMachine() {
 std::unique_ptr<llvm::TargetMachine>
 createTargetMachine(const LLVMTarget &target) {
   std::string errorMessage;
-  auto llvmTarget =
-      llvm::TargetRegistry::lookupTarget(target.getTriple(), errorMessage);
+  auto llvmTarget = llvm::TargetRegistry::lookupTarget(
+      llvm::Triple(target.getTriple()), errorMessage);
   if (!llvmTarget)
     return nullptr;
   llvm::Triple triple(target.getTriple());
@@ -444,6 +444,7 @@ static void initializeLLVMTargets() {
 #define LLVM_INITIALIZE_TARGET_SystemZ()
 #define LLVM_INITIALIZE_TARGET_VE()
 #define LLVM_INITIALIZE_TARGET_XCore()
+#define LLVM_INITIALIZE_TARGET_SPIRV()
 
 #define LLVM_TARGET(TargetName) LLVM_INITIALIZE_TARGET_##TargetName()
 #include "llvm/Config/Targets.def"

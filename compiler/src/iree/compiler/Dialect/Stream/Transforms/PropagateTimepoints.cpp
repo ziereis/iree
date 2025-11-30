@@ -63,7 +63,7 @@ static ExpandedGlobalMap expandResourceGlobals(Operation *rootOp,
   // Gather all of the resource globals in the root.
   for (auto &region : rootOp->getRegions()) {
     for (auto globalOp : region.getOps<IREE::Util::GlobalOp>()) {
-      if (!llvm::isa<IREE::Stream::ResourceType>(globalOp.getType()))
+      if (!isa<IREE::Stream::ResourceType>(globalOp.getType()))
         continue;
       expandedGlobals[globalOp.getName()].resourceOp = globalOp;
     }
@@ -93,7 +93,7 @@ static ExpandedGlobalMap expandResourceGlobals(Operation *rootOp,
 //===----------------------------------------------------------------------===//
 
 static bool isResourceType(Type type) {
-  return llvm::isa<IREE::Stream::ResourceType>(type);
+  return isa<IREE::Stream::ResourceType>(type);
 }
 
 // Returns true if an operands or results of |op| use !stream.resources.
@@ -137,7 +137,7 @@ static std::pair<Value, Value> consumeTimepoint(Location loc, Value value,
     return std::make_pair(timepoint, value);
   }
 
-  if (auto awaitOp = dyn_cast_or_null<IREE::Stream::TimepointAwaitOp>(
+  if (auto awaitOp = dyn_cast_if_present<IREE::Stream::TimepointAwaitOp>(
           value.getDefiningOp())) {
     // We can only consume asynchronous timepoints. If the await is a sync point
     // then we know that know result can be used without the host synchronizing
@@ -150,7 +150,7 @@ static std::pair<Value, Value> consumeTimepoint(Location loc, Value value,
       return std::make_pair(awaitOp.getAwaitTimepoint(),
                             awaitOp.getTiedResultOperand(value));
     }
-  } else if (auto executeOp = dyn_cast_or_null<IREE::Stream::AsyncExecuteOp>(
+  } else if (auto executeOp = dyn_cast_if_present<IREE::Stream::AsyncExecuteOp>(
                  value.getDefiningOp())) {
     return std::make_pair(executeOp.getResultTimepoint(), value);
   } else {
@@ -195,7 +195,7 @@ static void expandTimepoints(Operation *op, SymbolTable &symbolTable,
 static Value makeBlockArgResourceSize(Location loc, Value resourceValue,
                                       OpBuilder &builder) {
   // We can take any implicitly captured SSA values.
-  if (auto sizeAwareOp = dyn_cast_or_null<IREE::Util::SizeAwareOpInterface>(
+  if (auto sizeAwareOp = dyn_cast_if_present<IREE::Util::SizeAwareOpInterface>(
           resourceValue.getDefiningOp())) {
     auto sizeValue = sizeAwareOp.getResultSizeFromValue(resourceValue);
     if (sizeValue)
@@ -217,7 +217,7 @@ static Value makeBlockArgResourceSize(Location loc, Value resourceValue,
       // Size value found and implicitly captured; we can reuse (could be
       // a parent block argument, a constant, computed, etc).
       return sizeValue;
-    } else if (auto blockArg = llvm::dyn_cast<BlockArgument>(sizeValue)) {
+    } else if (auto blockArg = dyn_cast<BlockArgument>(sizeValue)) {
       if (blockArg.getParentBlock()->isEntryBlock()) {
         // Dynamic dimension passed in to the entry block; safe to use.
         return sizeValue;

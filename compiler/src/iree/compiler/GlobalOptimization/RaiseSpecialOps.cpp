@@ -319,19 +319,19 @@ public:
         // preferred to fuse those with producers (and the consumer fusion is
         // arguably the less canonical form).
         auto canFoldCast = [&]() {
-          if (llvm::isa<arith::ExtFOp>(*castOp))
+          if (isa<arith::ExtFOp>(*castOp))
             return true;
           // Signed operations can only be folded with (implicitly) signed
           // linalg named ops
-          if (llvm::isa<arith::ExtSIOp>(*castOp)) {
+          if (isa<arith::ExtSIOp>(*castOp)) {
             if (auto matmul =
-                    llvm::dyn_cast<linalg::MatmulOp>(namedOp.getOperation())) {
+                    dyn_cast<linalg::MatmulOp>(namedOp.getOperation())) {
               return matmul.getCast() != linalg::TypeFn::cast_unsigned;
             }
-            return !llvm::isa<linalg::PoolingNhwcMaxUnsignedOp,
-                              linalg::PoolingNhwcMinUnsignedOp,
-                              linalg::PoolingNwcMaxUnsignedOp,
-                              linalg::PoolingNwcMinUnsignedOp>(namedOp);
+            return !isa<linalg::PoolingNhwcMaxUnsignedOp,
+                        linalg::PoolingNhwcMinUnsignedOp,
+                        linalg::PoolingNwcMaxUnsignedOp,
+                        linalg::PoolingNwcMinUnsignedOp>(namedOp);
           }
           return false;
         };
@@ -477,7 +477,7 @@ matchATransposeBBatchMatmul(linalg::LinalgOp bmmOp) {
 
 class FuseMatmulTranspose : public OpRewritePattern<linalg::MatmulOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(linalg::MatmulOp matmulOp,
                                 PatternRewriter &rewriter) const override {
     if (!IREE::Flow::isNonNullAndOutsideDispatch(matmulOp)) {
@@ -503,7 +503,7 @@ public:
 class FuseBatchMatmulTranspose
     : public OpRewritePattern<linalg::BatchMatmulOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(linalg::BatchMatmulOp bmmOp,
                                 PatternRewriter &rewriter) const override {
     if (!IREE::Flow::isNonNullAndOutsideDispatch(bmmOp)) {
@@ -559,7 +559,7 @@ static std::optional<Value> matchGenericFill(linalg::LinalgOp linalgOp) {
 
 class RaiseGenericFill : public OpRewritePattern<linalg::GenericOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(linalg::GenericOp genericOp,
                                 PatternRewriter &rewriter) const override {
     if (!IREE::Flow::isNonNullAndOutsideDispatch(genericOp)) {
@@ -588,7 +588,7 @@ public:
 
 class RaiseInsertSliceToPad : public OpRewritePattern<tensor::InsertSliceOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(tensor::InsertSliceOp sliceOp,
                                 PatternRewriter &rewriter) const override {
     if (!IREE::Flow::isNonNullAndOutsideDispatch(sliceOp)) {
@@ -962,7 +962,7 @@ static Value rewriteCatNegateAndSlice(RewriterBase &rewriter,
 class InsertSliceNegateAndSlicePattern
     : public OpRewritePattern<tensor::InsertSliceOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(tensor::InsertSliceOp sliceOp,
                                 PatternRewriter &rewriter) const override {
     if (!IREE::Flow::isNonNullAndOutsideDispatch(sliceOp)) {
@@ -982,7 +982,7 @@ public:
 class ConcatenateNegateAndSlicePattern
     : public OpRewritePattern<tensor::ConcatOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(tensor::ConcatOp concatOp,
                                 PatternRewriter &rewriter) const override {
     if (!IREE::Flow::isNonNullAndOutsideDispatch(concatOp)) {
@@ -1016,28 +1016,28 @@ struct RaiseSpecialOpsPass
 
     // First walk the IR and try to raise any slice-like generics to tensor.
     IRRewriter rewriter(context);
-    funcOp->walk([&](linalg::GenericOp op) {
-      linalg::GenericOp linalgOp = op;
+    SmallVector<linalg::GenericOp> genericOps;
+    funcOp->walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
 
+    for (linalg::GenericOp linalgOp : genericOps) {
+      // Try raising to tensor.extract to an input and create an linalg.generic.
       OpBuilder::InsertionGuard guard(rewriter);
-
-      // Try raising to tensor.export and create an intermediate linalg.generic.
-      rewriter.setInsertionPoint(op);
+      rewriter.setInsertionPoint(linalgOp);
       FailureOr<linalg::GenericOp> maybeNewOp =
           raiseTensorExtractToInput(linalgOp, rewriter);
       if (succeeded(maybeNewOp)) {
+        rewriter.replaceOp(linalgOp, *maybeNewOp);
         linalgOp = *maybeNewOp;
       }
 
       // Try raising to a view-like operation. Replace if the op raising was
       // successful.
-      rewriter.setInsertionPoint(op);
       FailureOr<Operation *> maybeRaisedView =
           tryRaiseToView(linalgOp, rewriter);
       if (succeeded(maybeRaisedView)) {
-        rewriter.replaceOp(op, *maybeRaisedView);
+        rewriter.replaceOp(linalgOp, *maybeRaisedView);
       }
-    });
+    }
 
     // Next run a variety of raising patterns.
     {

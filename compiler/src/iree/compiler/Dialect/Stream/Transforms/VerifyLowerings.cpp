@@ -91,9 +91,7 @@ public:
 
   template <typename TypeT>
   void addTypeVerifier(std::function<Legality(TypeT)> fn) {
-    auto wrapperFn = [=](Type baseType) {
-      return fn(llvm::cast<TypeT>(baseType));
-    };
+    auto wrapperFn = [=](Type baseType) { return fn(cast<TypeT>(baseType)); };
     if (typeVerifiers.insert({TypeID::get<TypeT>(), wrapperFn}).second ==
         false) {
       assert(false && "already registered for this type");
@@ -259,6 +257,9 @@ struct VerifyInputPass
     if (failed(verifier.run(getOperation()))) {
       return signalPassFailure();
     }
+
+    // Preserve all analyses since this is a read-only verification pass.
+    markAllAnalysesPreserved();
   }
 };
 
@@ -294,6 +295,9 @@ struct VerifyLoweringToTensorsPass
     if (failed(verifier.run(getOperation()))) {
       return signalPassFailure();
     }
+
+    // Preserve all analyses since this is a read-only verification pass.
+    markAllAnalysesPreserved();
   }
 };
 
@@ -315,6 +319,9 @@ struct VerifyLoweringToAsyncResourcesPass
     if (failed(verifier.run(getOperation()))) {
       return signalPassFailure();
     }
+
+    // Preserve all analyses since this is a read-only verification pass.
+    markAllAnalysesPreserved();
   }
 };
 
@@ -366,6 +373,9 @@ struct VerifyLoweringToAsyncPass
     if (failed(verifier.run(getOperation()))) {
       return signalPassFailure();
     }
+
+    // Preserve all analyses since this is a read-only verification pass.
+    markAllAnalysesPreserved();
   }
 };
 
@@ -394,6 +404,9 @@ struct VerifyLoweringToCmdPass
     if (failed(verifier.run(getOperation()))) {
       return signalPassFailure();
     }
+
+    // Preserve all analyses since this is a read-only verification pass.
+    markAllAnalysesPreserved();
   }
 };
 

@@ -59,7 +59,7 @@ namespace {
 // operations as well.
 struct ReplaceGPUBarrierWithLDSBarrier
     : public OpRewritePattern<gpu::BarrierOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(gpu::BarrierOp op,
                                 PatternRewriter &rewriter) const override {
@@ -69,13 +69,8 @@ struct ReplaceGPUBarrierWithLDSBarrier
   }
 };
 
-static void populateConvertGPUToAMDGPUPatterns(RewritePatternSet &patterns,
-                                               const amdgpu::Chipset &chipset) {
-  // TODO(kdrewnia): This if statement is an emergency fix for an incorrect
-  // lowering of amdgpu.lds_barrier.
-  if (chipset.majorVersion != 12) {
-    patterns.add<ReplaceGPUBarrierWithLDSBarrier>(patterns.getContext());
-  }
+static void populateConvertGPUToAMDGPUPatterns(RewritePatternSet &patterns) {
+  patterns.add<ReplaceGPUBarrierWithLDSBarrier>(patterns.getContext());
 }
 
 /// Hacky pattern to swap `s_setprio` operations with `amdgpu.mfma` ops.
@@ -101,7 +96,7 @@ static void populateConvertGPUToAMDGPUPatterns(RewritePatternSet &patterns,
 /// effort.
 constexpr StringLiteral kSwapName = "iree_gpu.swap_mfma";
 struct SwapSetPrioWithMFMA : public OpRewritePattern<ROCDL::SetPrioOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(ROCDL::SetPrioOp setPrio,
                                 PatternRewriter &rewriter) const override {
     if (!setPrio->hasAttr(kSwapName)) {
@@ -145,7 +140,7 @@ static void populateSwapSetPrioWithMFMAPatterns(RewritePatternSet &patterns) {
 template <typename... Floats>
 static bool containsAPred(Type type) {
   type = getElementTypeOrSelf(type);
-  return llvm::isa<Floats...>(type);
+  return isa<Floats...>(type);
 }
 
 // Function to check valid data types on the ROCm backend.
@@ -255,7 +250,7 @@ struct ConvertToROCDLPass final
           /*chipset=*/*maybeChipset);
       arith::populateCeilFloorDivExpandOpsPatterns(patterns);
       populateSwapSetPrioWithMFMAPatterns(patterns);
-      populateConvertGPUToAMDGPUPatterns(patterns, *maybeChipset);
+      populateConvertGPUToAMDGPUPatterns(patterns);
       populateConvertSharedMemoryAllocOps(patterns);
       populateDropSharedMemoryDeallocOpPatterns(patterns);
       vector::populateVectorToVectorCanonicalizationPatterns(patterns);
@@ -346,12 +341,15 @@ struct ConvertToROCDLPass final
       populateVectorToLLVMConversionPatterns(converter, llvmPatterns);
       vector::populateVectorTransferLoweringPatterns(llvmPatterns,
                                                      /*maxTransferRank=*/1);
+      // We pass Runtime::HIP in order to enable gpu.printf for debugging.
+      // At time of writing, that flag has no other effect.
       populateGpuToROCDLConversionPatterns(
-          converter, llvmPatterns, gpu::amd::Runtime::Unknown, *maybeChipset);
+          converter, llvmPatterns, gpu::amd::Runtime::HIP, *maybeChipset);
       LLVMConversionTarget target(getContext());
       populateFuncToLLVMFuncOpConversionPattern(converter, llvmPatterns);
       configureGpuToROCDLConversionLegality(target);
-      populateMathToROCDLConversionPatterns(converter, llvmPatterns);
+      populateMathToROCDLConversionPatterns(converter, llvmPatterns,
+                                            /*chipset=*/*maybeChipset);
       ub::populateUBToLLVMConversionPatterns(converter, llvmPatterns);
 
       if (failed(applyPartialConversion(m, target, std::move(llvmPatterns)))) {

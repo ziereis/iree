@@ -519,8 +519,7 @@ combineLayoutTransformation(MLIRContext *ctx, FunctionOpInterface funcOp,
     // Only sink reshape ops, so bail if the consumer operation is a reshape.
     auto controlSinkReshapesFn = [](OpOperand *operand) -> bool {
       Operation *consumer = operand->getOwner();
-      return !llvm::isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(
-          consumer);
+      return !isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(consumer);
     };
     linalg::populateFoldReshapeOpsByExpansionPatterns(propagationPatterns,
                                                       controlSinkReshapesFn);
@@ -555,8 +554,8 @@ combineLayoutTransformation(MLIRContext *ctx, FunctionOpInterface funcOp,
           return consumerOperand.getDefiningOp<tensor::EmptyOp>();
         });
   };
-  linalg::populateDataLayoutPropagationPatterns(propagationPatterns,
-                                                controlPropagationFn);
+  linalg::populateDataLayoutPropagationPatterns(
+      propagationPatterns, controlPropagationFn, /*PoisonPaddingOk=*/true);
   // TODO(Max191): The propagation patterns could be applied at the same time as
   // relayout ops are folded into the map_scatter, which may enable even more
   // folding. This requires the relayout op folding to be done as pattern

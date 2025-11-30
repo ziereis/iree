@@ -95,7 +95,7 @@ struct UnfuseBatchNormInferencePattern final
     // which should not be subject to quantization at a higher level.
     auto inputType = dyn_cast<RankedTensorType>(bnOp.getOperand().getType());
     auto varianceType =
-        llvm::dyn_cast<RankedTensorType>(bnOp.getVariance().getType());
+        dyn_cast<RankedTensorType>(bnOp.getVariance().getType());
     if (!inputType || !varianceType) {
       return failure();
     }
@@ -233,7 +233,7 @@ Value calculateReduceSize(Operation *op, Value operand,
 //    ((X - E[X]) / Sqrt(Var[X] + epsilon)) * scale + offset.
 struct UnfuseBatchNormTrainingPattern final
     : OpRewritePattern<mlir::stablehlo::BatchNormTrainingOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(mlir::stablehlo::BatchNormTrainingOp bnOp,
                                 PatternRewriter &rewriter) const override {

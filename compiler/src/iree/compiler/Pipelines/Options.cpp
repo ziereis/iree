@@ -27,6 +27,31 @@ void GlobalPipelineOptions::bindOptions(OptionsBinder &binder) {
       llvm::cl::desc("Global optimization level to apply to the entire "
                      "compilation flow."),
       llvm::cl::cat(category));
+
+  binder.opt<bool>(
+      "iree-opt-data-tiling", dataTiling,
+      llvm::cl::desc(
+          "Enables data tiling optimization. There are two data-tiling "
+          "paths; it is the global flag that enables data-tiling with the"
+          "suggested path. You can choose one of them to enable explicitly, if "
+          "you have a preference. See `iree-global-opt-data-tiling` and "
+          "`iree-dispatch-creation-data-tiling` for details. Note that this "
+          "flag will override the other two flags, because it has a higher "
+          "priority."),
+      llvm::cl::cat(category));
+
+  binder.opt<bool>(
+      "iree-opt-const-expr-hoisting", constExprHoisting,
+      llvm::cl::desc(
+          "Hoists the results of latent constant expressions into immutable "
+          "global initializers for evaluation at program load."),
+      llvm::cl::cat(category));
+  binder.opt<int64_t>(
+      "iree-opt-const-expr-max-size-increase-threshold",
+      constExprMaxSizeIncreaseThreshold,
+      llvm::cl::desc("Maximum byte size increase allowed for constant expr "
+                     "hoisting policy to allow hoisting."),
+      llvm::cl::cat(category));
 }
 
 void BindingOptions::bindOptions(OptionsBinder &binder) {
@@ -159,7 +184,7 @@ void GlobalOptimizationOptions::bindOptions(OptionsBinder &binder) {
                                   "along the outer most dimension."),
                    llvm::cl::cat(category));
   binder.opt<bool>(
-      "iree-opt-data-tiling", dataTiling,
+      "iree-global-opt-data-tiling", dataTiling,
       llvm::cl::desc(
           "Enables data tiling path starting from GlobalOptimization phase."),
       llvm::cl::cat(category));
@@ -167,18 +192,6 @@ void GlobalOptimizationOptions::bindOptions(OptionsBinder &binder) {
       "iree-opt-const-eval", constEval,
       llvm::cl::desc("Enables eager evaluation of constants using the full "
                      "compiler and runtime (on by default)."),
-      llvm::cl::cat(category));
-  binder.opt<bool>(
-      "iree-opt-const-expr-hoisting", constExprHoisting,
-      llvm::cl::desc(
-          "Hoists the results of latent constant expressions into immutable "
-          "global initializers for evaluation at program load."),
-      llvm::cl::cat(category));
-  binder.opt<int64_t>(
-      "iree-opt-const-expr-max-size-increase-threshold",
-      constExprMaxSizeIncreaseThreshold,
-      llvm::cl::desc("Maximum byte size increase allowed for constant expr "
-                     "hoisting policy to allow hoisting."),
       llvm::cl::cat(category));
   binder.opt<bool>(
       "iree-opt-numeric-precision-reduction", numericPrecisionReduction,
@@ -325,6 +338,13 @@ void DispatchCreationOptions::bindOptions(OptionsBinder &binder) {
       "iree-dispatch-creation-enable-split-reduction", enableSplitReduction,
       llvm::cl::desc(
           "Enable split-reduction for certain reduction operations."),
+      llvm::cl::cat(category));
+  binder.opt<bool>(
+      "iree-dispatch-creation-enable-aggressive-reshape-movement",
+      enableAggressiveReshapeMovement,
+      llvm::cl::desc(
+          "Enable aggressive reshape movement (bubbling expand/collapse "
+          "shapes across reduction ops)."),
       llvm::cl::cat(category));
 }
 
