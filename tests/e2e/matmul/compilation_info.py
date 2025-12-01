@@ -27,6 +27,10 @@ class MMASchedule:
     def get_subgroup_basis(self) -> str:
         return f"[[{self.m_count}, {self.n_count}, 1], [0, 1, 2]]"
 
+    def get_subgroup_tile(self) -> str:
+        """Returns subgroup tile sizes for TileAndFuse pipeline."""
+        return f"[{self.m_count}, {self.n_count}, 0]"
+
 
 # Enumerates of the collections of compilation info that we can generate tests
 # for. The values are the accepted values for the --compilation_info= flag.
@@ -36,6 +40,8 @@ class CompilationInfoId(enum.Enum):
     LLVMGPUVectorDistributeMFMA = "LLVMGPUVectorDistributeMFMA"
     LLVMGPUVectorDistributeWMMAR3 = "LLVMGPUVectorDistributeWMMAR3"
     LLVMGPUVectorDistributeWMMAR4 = "LLVMGPUVectorDistributeWMMAR4"
+    LLVMGPUVectorDistributeCUDA = "LLVMGPUVectorDistributeCUDA"
+    LLVMGPUTileAndFuseCUDA = "LLVMGPUTileAndFuseCUDA"
     SPIRVCooperativeMatrixVectorize = "SPIRVCooperativeMatrixVectorize"
     SPIRVVectorizeMali = "SPIRVVectorizeMali"
     SPIRVVectorizeNVIDIA = "SPIRVVectorizeNVIDIA"
@@ -74,13 +80,30 @@ class IREEGPUCompilationInfo(CompilationInfo):
         if self.subgroup_size is not None:
             subgroup_size_str = f"subgroup_size = {self.subgroup_size}"
 
+        # TileAndFuse uses different lowering config format than VectorDistribute
+        if compiler_pipeline == "LLVMGPUTileAndFuse":
+            # TileAndFuse uses subgroup (tile counts) + promote_operands
+            lowering_config = (
+                f"  lowering_config = #iree_gpu.lowering_config<{{"
+                f"  mma_kind = #iree_gpu.mma_layout<{self.mma_schedule.intrinsic}>, "
+                f"  subgroup = {self.mma_schedule.get_subgroup_tile()}, "
+                f"  promote_operands = [0, 1], "
+                f"  workgroup = {self.workgroup_tile}, "
+                f"  reduction = {self.reduction_tile} }}>,\n"
+            )
+        else:
+            # VectorDistribute uses subgroup_basis (distribution basis)
+            lowering_config = (
+                f"  lowering_config = #iree_gpu.lowering_config<{{"
+                f"  mma_kind = #iree_gpu.mma_layout<{self.mma_schedule.intrinsic}>, "
+                f"  subgroup_basis = {self.mma_schedule.get_subgroup_basis()}, "
+                f"  workgroup = {self.workgroup_tile}, "
+                f"  reduction = {self.reduction_tile} }}>,\n"
+            )
+
         return (
             "#iree_codegen.compilation_info<\n"
-            f"  lowering_config = #iree_gpu.lowering_config<{{"
-            f"  mma_kind = #iree_gpu.mma_layout<{self.mma_schedule.intrinsic}>, "
-            f"  subgroup_basis = {self.mma_schedule.get_subgroup_basis()}, "
-            f"  workgroup = {self.workgroup_tile}, "
-            f"  reduction = {self.reduction_tile} }}>,\n"
+            f"{lowering_config}"
             f"  translation_info = #iree_codegen.translation_info<pipeline = {compiler_pipeline} {self.workgroup_size_str()}\n"
             f"  {subgroup_size_str}>>\n"
         )
@@ -345,6 +368,62 @@ def get_rocm_test_compilation_infos(
     return infos
 
 
+def get_cuda_test_compilation_infos(
+    compilation_info_id: CompilationInfoId, lhs_rhs_type: MatrixElemTypeId
+):
+    """Generate compilation infos for CUDA/NVIDIA GPU tests."""
+    # Only F16 is supported for NV_MMA_SYNC_F32_16x8x16_F16
+    if lhs_rhs_type != MatrixElemTypeId.F16:
+        return []
+
+    # Determine the pipeline based on compilation_info_id
+    if compilation_info_id == CompilationInfoId.LLVMGPUVectorDistributeCUDA:
+        pipeline = "LLVMGPUVectorDistribute"
+    elif compilation_info_id == CompilationInfoId.LLVMGPUTileAndFuseCUDA:
+        pipeline = "LLVMGPUTileAndFuse"
+    else:
+        raise ValueError("Unknown pipeline for CUDA")
+
+    # NV_MMA_SYNC_F32_16x8x16_F16: M=16, N=8, K=16, input=F16, output=F32
+    # Subgroup size is 32 (NVIDIA warp size)
+    schedules = [
+        # Basic single subgroup configurations
+        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 1, 1, 1, 1, 1),
+        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 1, 1, 1, 1, 2),
+        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 1, 1, 1, 2, 1),
+        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 1, 1, 2, 1, 1),
+        # Multiple subgroups (warps)
+        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 2, 2, 1, 1, 1),
+        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 2, 2, 2, 2, 2),
+        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 2, 4, 2, 1, 2),
+        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 4, 2, 4, 2, 2),
+    ]
+
+    subgroup_size = 32  # NVIDIA warp size
+
+    infos = []
+    for schedule in schedules:
+        # NV_MMA_SYNC_F32_16x8x16_F16: M=16, N=8, K=16
+        wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
+        wg_tile_n = schedule.n_count * schedule.n_tile_count * 8
+        wg_tile_k = schedule.k_tile_count * 16
+
+        workgroup_tile = [wg_tile_m, wg_tile_n, 0]
+        reduction_tile = [0, 0, wg_tile_k]
+        workgroup_size = [schedule.n_count * subgroup_size, schedule.m_count, 1]
+        infos.append(
+            IREEGPUCompilationInfo(
+                workgroup_tile=workgroup_tile,
+                reduction_tile=reduction_tile,
+                dispatch_lowering_pass_pipeline=pipeline,
+                workgroup_size=workgroup_size,
+                mma_schedule=schedule,
+                subgroup_size=subgroup_size,
+            )
+        )
+    return infos
+
+
 # Returns the list of CompilationInfo's to use for the CompilationInfoId.
 def get_test_compilation_infos(
     compilation_info_id: CompilationInfoId, lhs_rhs_type: MatrixElemTypeId
@@ -358,6 +437,12 @@ def get_test_compilation_infos(
         CompilationInfoId.LLVMGPUVectorDistributeWMMAR4,
     ]:
         return get_rocm_test_compilation_infos(compilation_info_id, lhs_rhs_type)
+
+    if compilation_info_id in [
+        CompilationInfoId.LLVMGPUVectorDistributeCUDA,
+        CompilationInfoId.LLVMGPUTileAndFuseCUDA,
+    ]:
+        return get_cuda_test_compilation_infos(compilation_info_id, lhs_rhs_type)
 
     software_pipeline_depth = 0
     tile_workgroup_size_pairs = []
