@@ -58,17 +58,33 @@ static void padAlloc(MLIRContext *context, memref::AllocOp allocOp,
   // load size.
   int64_t paddingSize = paddingSizeBits / bitwidth;
   SmallVector<int64_t> shape = llvm::to_vector(allocOp.getType().getShape());
-  // Ensure 16-byte (128-bit) alignment for ldmatrix compatibility
-  int64_t alignmentElements = 128 / bitwidth;
   int64_t newSize = shape.back() + paddingSize;
-  shape.back() = llvm::alignTo(newSize, alignmentElements);
+
+  // If the allocation has an alignment requirement, ensure the padded stride
+  // is a multiple of the alignment. This is needed for ops like ldmatrix that
+  // require aligned memory access patterns.
+  std::optional<uint64_t> alignment = allocOp.getAlignment();
+  if (alignment) {
+    int64_t alignmentElements = *alignment / (bitwidth / 8);
+    if (alignmentElements > 0) {
+      newSize = llvm::alignTo(newSize, alignmentElements);
+    }
+  }
+
+  shape.back() = newSize;
   MemRefType allocType =
       MemRefType::get(shape, elType, MemRefLayoutAttrInterface{},
                       allocOp.getType().getMemorySpace());
   IRRewriter rewriter(context);
   rewriter.setInsertionPoint(allocOp);
   Location loc = allocOp.getLoc();
-  Value paddedAlloc = memref::AllocOp::create(rewriter, loc, allocType);
+  // Preserve the alignment attribute on the new allocation.
+  IntegerAttr alignmentAttr;
+  if (alignment) {
+    alignmentAttr = rewriter.getI64IntegerAttr(*alignment);
+  }
+  Value paddedAlloc = memref::AllocOp::create(rewriter, loc, allocType,
+                                              /*dynamicSizes=*/{}, alignmentAttr);
   SmallVector<int64_t> offsets(shape.size(), 0);
   SmallVector<int64_t> strides(shape.size(), 1);
   Value subview =
@@ -142,14 +158,21 @@ static unsigned computeEffectiveExtraBytes(mlir::FunctionOpInterface funcOp,
         bitWidth = IREE::Util::getTypeBitWidth(elemType);
       }
       unsigned elemSize = bitWidth / 8;
-      // Match the aligned padding calculation in padAlloc
-      unsigned paddingElements = paddingBits / bitWidth;
-      unsigned alignmentElements = 128 / bitWidth;
+
+      // Match the aligned padding calculation in padAlloc.
+      int64_t paddingElements = paddingBits / bitWidth;
       int64_t innerDim = shape.back();
       int64_t newSize = innerDim + paddingElements;
-      int64_t alignedSize = llvm::alignTo(newSize, alignmentElements);
-      unsigned extraElements = alignedSize - innerDim;
 
+      // Account for alignment-based padding if present.
+      if (std::optional<uint64_t> alignment = allocOp.getAlignment()) {
+        int64_t alignmentElements = *alignment / elemSize;
+        if (alignmentElements > 0) {
+          newSize = llvm::alignTo(newSize, alignmentElements);
+        }
+      }
+
+      unsigned extraElements = newSize - innerDim;
       totalExtra += outerProduct * extraElements * elemSize;
     }
   });

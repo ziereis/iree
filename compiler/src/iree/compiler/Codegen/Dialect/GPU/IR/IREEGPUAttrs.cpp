@@ -751,11 +751,10 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
         .getResult();
   }
   if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
-    // here we want to transpose the two outer dimension to correctly
-    // model the column major register ordering the op expects
-    // for whatever reason the input is shaped 2x2x1x2 for the
-    // VectorDistribution pipeline and 2x1x2x2 for the TileAndFusePipeline
-    // so i remove the unit dim here to make the transpose easier
+    // Transpose the two outer dimensions to model the column-major register
+    // ordering expected by mma.sync. The input shape differs between pipelines:
+    // VectorDistribute produces 2x2x1x2, TileAndFuse produces 2x1x2x2.
+    // Remove the unit dimension to simplify the transpose.
     auto nonUnitVecType = VectorType::get({2, 2, 2}, builder.getF16Type());
     auto reshaped =
         builder.create<vector::ShapeCastOp>(loc, nonUnitVecType, lhs);

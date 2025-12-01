@@ -276,7 +276,7 @@ static LogicalResult populateWarpAndThreadIndices(
   return success();
 }
 
-static LogicalResult calcualteWarpIndicesAndLinearLaneID(
+static LogicalResult calculateWarpIndicesAndLinearLaneID(
     RewriterBase &rewriter, Value threadId, int64_t subgroupSize,
     NestedLayoutAttr vectorLayout, SmallVector<Value> &warpIndices,
     Value &laneID) {
@@ -476,7 +476,7 @@ struct DistributeTransferReadToLdMatrix final
     // delinearize operation.
     SmallVector<Value> warpIndices;
     Value laneId;
-    auto subgroupDelinearize = calcualteWarpIndicesAndLinearLaneID(
+    auto subgroupDelinearize = calculateWarpIndicesAndLinearLaneID(
         rewriter, threadId, subgroupSize, vectorLayout, warpIndices, laneId);
     if (failed(subgroupDelinearize)) {
       return rewriter.notifyMatchFailure(readOp,
@@ -561,6 +561,15 @@ struct DistributeTransferReadToLdMatrix final
       // part.
       SmallVector<int64_t> batchPos(offsets.begin(), offsets.begin() + rank);
       acc = vector::InsertOp::create(rewriter, loc, shapeCast, acc, batchPos);
+    }
+
+    // Set 16-byte alignment requirement for ldmatrix on the source allocation.
+    if (auto allocOp = readOp.getBase().getDefiningOp<memref::AllocOp>()) {
+      uint64_t requiredAlignment = 16; // 128 bits
+      uint64_t currentAlignment = allocOp.getAlignment().value_or(0);
+      if (currentAlignment < requiredAlignment) {
+        allocOp.setAlignment(requiredAlignment);
+      }
     }
 
     replaceOpWithDistributedValues(rewriter, readOp, cast<VectorValue>(acc));

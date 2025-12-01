@@ -192,9 +192,6 @@ struct ConvertToNVVMPass final
         return signalPassFailure();
       }
     }
-    // 16-byte alignment is required for ldmatrix and other shared memory
-    // instructions on NVIDIA GPUs.
-    setSharedMemoryAlignment(m, 16);
     ConvertToDynamicSharedMemory(m);
   }
 };
