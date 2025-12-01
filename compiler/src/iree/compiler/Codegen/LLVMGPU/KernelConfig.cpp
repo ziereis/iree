@@ -55,7 +55,7 @@ namespace mlir::iree_compiler {
 llvm::cl::opt<bool> clGPUUseTileAndFuseMatmul(
     "iree-codegen-llvmgpu-use-tile-and-fuse-matmul",
     llvm::cl::desc("test the the tile and fuse pipeline for matmul"),
-    llvm::cl::init(false));
+    llvm::cl::init(true));
 
 llvm::cl::opt<bool> clGPUTestTileAndFuseVectorize(
     "iree-codegen-llvmgpu-test-tile-and-fuse-vectorize",

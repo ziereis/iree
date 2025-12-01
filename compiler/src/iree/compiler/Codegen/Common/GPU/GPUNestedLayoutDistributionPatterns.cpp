@@ -98,7 +98,7 @@ static SmallVector<Value> getTransferIndicesFromNestedLayout(
 
 /// Computes memory indices for ldmatrix based on nested layout.
 /// For ldmatrix, lane offsets replace outer+thread distribution since
-/// ldmatrix loads a full MMA tile with hardware-specific addressing.
+/// ldmatrix loads a full MMA tile.
 /// Order matches scalar: warp → batch → lane → base
 static SmallVector<Value> getLdMatrixIndicesFromNestedLayout(
     OpBuilder &b, ValueRange baseIndices, ArrayRef<int64_t> batchOffsets,
@@ -118,18 +118,13 @@ static SmallVector<Value> getLdMatrixIndicesFromNestedLayout(
     // Lane stride covers outer+thread+element since ldmatrix loads full tile
     int64_t laneStride = outerTile[i] * threadTile[i] * elementTile[i];
     SmallVector<Value> ids = {
-        warpIndices[i],
-        arith::ConstantIndexOp::create(b, loc, batchOffsets[i]),
-        laneOffsets[i],
-        baseIndices[i]};
-    SmallVector<int64_t> sizes = {
-        vectorLayout.getSubgroupTile()[i],
-        batchTile[i],
-        laneStride,
-        1};
+        warpIndices[i], arith::ConstantIndexOp::create(b, loc, batchOffsets[i]),
+        laneOffsets[i], baseIndices[i]};
+    SmallVector<int64_t> sizes = {vectorLayout.getSubgroupTile()[i],
+                                  batchTile[i], laneStride, 1};
 
-    Value memIdx = affine::AffineLinearizeIndexOp::create(
-        b, loc, ids, sizes, /*disjoint=*/true);
+    Value memIdx = affine::AffineLinearizeIndexOp::create(b, loc, ids, sizes,
+                                                          /*disjoint=*/true);
     memIndices.push_back(memIdx);
   }
   return memIndices;
@@ -370,10 +365,79 @@ static VectorValue extractSliceAsVector(RewriterBase &rewriter, Location loc,
   return cast<VectorValue>(slice);
 }
 
+//===----------------------------------------------------------------------===//
+// ldmatrix support utilities
+//===----------------------------------------------------------------------===//
+
+/// Parameters for emitting nvgpu.ldmatrix ops.
+struct LdMatrixParams {
+  int numTiles;   // Number of 8x8 tiles: 1, 2, or 4
+  bool transpose; // Use .trans variant for transposed loads
+};
+
+/// Check if a transfer_read is consumed by a to_layout with mma_kind.
+/// Returns the MMA kind attribute if found, failure otherwise.
+static FailureOr<IREE::GPU::MMAAttr>
+getMmaKindFromUser(vector::TransferReadOp readOp) {
+  // Look through users to find a to_layout op with mma_kind
+  for (Operation *user : readOp->getUsers()) {
+    auto toLayoutOp = dyn_cast<IREE::VectorExt::ToLayoutOp>(user);
+    if (!toLayoutOp)
+      continue;
+
+    Attribute mmaKindAttr = toLayoutOp.getMmaKindAttr();
+    if (!mmaKindAttr)
+      continue;
+
+    if (auto mmaAttr = dyn_cast<IREE::GPU::MMAAttr>(mmaKindAttr)) {
+      return mmaAttr;
+    }
+  }
+  return failure();
+}
+
+/// Infer ldmatrix parameters directly from nested layout structure.
+/// Returns failure if ldmatrix is not applicable.
+static FailureOr<LdMatrixParams>
+inferLdMatrixParamsFromLayout(IREE::VectorExt::NestedLayoutAttr layout,
+                              IREE::GPU::MMAAttr mmaKind) {
+  // For now, only support NV_MMA_SYNC_F32_16x8x16_F16
+  IREE::GPU::MMAIntrinsic intrinsic = mmaKind.getIntrinsic();
+  if (intrinsic != IREE::GPU::MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+    LDBG("ldmatrix: unsupported MMA intrinsic, only "
+         "NV_MMA_SYNC_F32_16x8x16_F16 supported");
+    return failure();
+  }
+
+  ArrayRef<int64_t> outerTile = layout.getOuterTile();
+  ArrayRef<int64_t> threadStrides = layout.getThreadStrides();
+
+  if (outerTile.size() != 2) {
+    LDBG("ldmatrix: layout rank != 2");
+    return failure();
+  }
+
+  // numTiles = product of outer tile dimensions
+  int numTiles = outerTile[0] * outerTile[1];
+  if (numTiles != 2 && numTiles != 4) {
+    LDBG("ldmatrix: invalid numTiles=" << numTiles << ", must be 2, or 4");
+    return failure();
+  }
+
+  // Transpose based on thread stride pattern.
+  // Column-major (stride[0] < stride[1]) needs transpose.
+  bool transpose = (threadStrides[0] < threadStrides[1]);
+
+  LDBG("ldmatrix: inferred numTiles=" << numTiles
+                                      << ", transpose=" << transpose);
+
+  return LdMatrixParams{numTiles, transpose};
+}
+
 namespace {
 
 /// Pattern to distribute `vector.transfer_read` ops from shared memory to
-/// `nvgpu.ldmatrix` when the read feeds an MMA operation.
+/// `nvgpu.ldmatrix` when the layout permits.
 struct DistributeTransferReadToLdMatrix final
     : OpDistributionPattern<vector::TransferReadOp> {
   using OpDistributionPattern::OpDistributionPattern;
@@ -425,21 +489,18 @@ struct DistributeTransferReadToLdMatrix final
       return rewriter.notifyMatchFailure(readOp, "source is not a memref");
     }
     if (!hasSharedMemoryAddressSpace(memrefType)) {
-      LDBG("ldmatrix: source is not shared memory");
       return rewriter.notifyMatchFailure(readOp, "source is not shared memory");
     }
 
     // 2. Check element type is f16 (required for ldmatrix)
     Type elementType = memrefType.getElementType();
     if (!elementType.isF16()) {
-      LDBG("ldmatrix: element type is not f16");
       return rewriter.notifyMatchFailure(readOp, "element type is not f16");
     }
 
     // 3. Find consuming to_layout with mma_kind
-    auto mmaKind = getMmaKindFromUser(readOp);
-    if (!mmaKind) {
-      LDBG("ldmatrix: no mma_kind found from user");
+    FailureOr<IREE::GPU::MMAAttr> mmaKind = getMmaKindFromUser(readOp);
+    if (failed(mmaKind)) {
       return rewriter.notifyMatchFailure(readOp, "no mma_kind from user");
     }
 
@@ -450,22 +511,20 @@ struct DistributeTransferReadToLdMatrix final
       return rewriter.notifyMatchFailure(readOp, "non-nested layout");
     }
 
-    auto params = inferLdMatrixParamsFromLayout(vectorLayout, *mmaKind);
-    if (!params) {
-      LDBG("ldmatrix: could not infer ldmatrix params from layout");
+    FailureOr<LdMatrixParams> params =
+        inferLdMatrixParamsFromLayout(vectorLayout, *mmaKind);
+    if (failed(params)) {
       return rewriter.notifyMatchFailure(
           readOp, "ldmatrix not applicable for this layout/MMA kind");
     }
 
     // 5. Check for unsupported features
     if (readOp.getMask()) {
-      LDBG("ldmatrix: masked reads not supported");
       return rewriter.notifyMatchFailure(readOp, "masked reads not supported");
     }
 
     // Only support identity permutation map for now
     if (!readOp.getPermutationMap().isIdentity()) {
-      LDBG("ldmatrix: non-identity permutation map not supported");
       return rewriter.notifyMatchFailure(
           readOp, "non-identity permutation map not supported");
     }
@@ -487,9 +546,8 @@ struct DistributeTransferReadToLdMatrix final
     auto laneIndicesResult =
         computeLdMatrixLaneIndices(rewriter, loc, laneId, *params);
     if (failed(laneIndicesResult)) {
-      LDBG("ldmatrix: unsupported ldmatrix configuration");
-      return rewriter.notifyMatchFailure(
-          readOp, "unsupported ldmatrix configuration");
+      return rewriter.notifyMatchFailure(readOp,
+                                         "unsupported ldmatrix configuration");
     }
     auto [laneRow, laneCol] = *laneIndicesResult;
 
@@ -512,13 +570,10 @@ struct DistributeTransferReadToLdMatrix final
 
     // For ldmatrix, we iterate over batch dimensions only.
     // Each ldmatrix call loads all outer+element values for one MMA tile.
-    // distShape is [batch0, batch1, outer0, outer1, element0, element1]
-    // tileShape: batch dims = 1 (iterate each), outer+element dims = full size
     SmallVector<int64_t> tileShape(distShape);
     for (int64_t i = 0; i < rank; ++i) {
       tileShape[i] = 1; // Iterate over each batch position
     }
-    // outer and element dimensions stay as-is (ldmatrix loads all at once)
 
     // Iterate over batch tiles (one ldmatrix per MMA tile)
     // Lane offsets apply to the last two dimensions (row, col)

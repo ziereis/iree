@@ -186,27 +186,6 @@ combiningKindToAllReduce(vector::CombiningKind kind);
 bool sharedMemTransposeFilter(AffineMap indexMap);
 
 //===----------------------------------------------------------------------===//
-// ldmatrix support utilities
-//===----------------------------------------------------------------------===//
-
-/// Parameters for emitting nvgpu.ldmatrix ops.
-struct LdMatrixParams {
-  int numTiles;   // Number of 8x8 tiles: 1, 2, or 4
-  bool transpose; // Use .trans variant for transposed loads
-};
-
-/// Check if a transfer_read is consumed by a to_layout with mma_kind.
-/// Returns the MMA kind attribute if found, std::nullopt otherwise.
-std::optional<IREE::GPU::MMAAttr>
-getMmaKindFromUser(vector::TransferReadOp readOp);
-
-/// Infer ldmatrix parameters directly from nested layout structure.
-/// Returns std::nullopt if ldmatrix is not applicable.
-std::optional<LdMatrixParams>
-inferLdMatrixParamsFromLayout(IREE::VectorExt::NestedLayoutAttr layout,
-                              IREE::GPU::MMAAttr mmaKind);
-
-//===----------------------------------------------------------------------===//
 // GPU Target Information
 //===----------------------------------------------------------------------===//
 FailureOr<ArrayAttr> getSupportedMmaTypes(DictionaryAttr config);
