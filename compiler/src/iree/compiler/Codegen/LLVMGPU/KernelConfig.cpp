@@ -94,18 +94,6 @@ llvm::cl::opt<bool> clGPUUseTileAndFuseConvolution(
         "enable the tile and fuse pipeline for supported convolutions"),
     llvm::cl::init(true));
 
-/// Flag to force using WMMA tensorcore operations.
-llvm::cl::opt<bool>
-    clGPUUseWMMA("iree-codegen-llvmgpu-use-wmma",
-                 llvm::cl::desc("force use of wmma operations for tensorcore"),
-                 llvm::cl::init(false));
-
-/// Flag used to toggle using mma.sync vs wmma when targeting tensorcore.
-llvm::cl::opt<bool>
-    clGPUUseMMASync("iree-codegen-llvmgpu-use-mma-sync",
-                    llvm::cl::desc("force use mma sync instead of wmma ops"),
-                    llvm::cl::init(false));
-
 llvm::cl::opt<int> clGPUMatmulCThreshold(
     "iree-codegen-llvmgpu-matmul-c-matrix-threshold",
     llvm::cl::desc("matmul c matrix element count threshold to be considered "
