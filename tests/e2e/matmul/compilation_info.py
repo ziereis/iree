@@ -454,7 +454,9 @@ def get_test_compilation_infos(
         CompilationInfoId.LLVMGPUVectorDistributeCUDA,
         CompilationInfoId.LLVMGPUTileAndFuseCUDA,
     ]:
-        return get_cuda_test_compilation_infos(compilation_info_id, lhs_rhs_type, acc_type)
+        return get_cuda_test_compilation_infos(
+            compilation_info_id, lhs_rhs_type, acc_type
+        )
 
     software_pipeline_depth = 0
     tile_workgroup_size_pairs = []

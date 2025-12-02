@@ -83,8 +83,9 @@ static void padAlloc(MLIRContext *context, memref::AllocOp allocOp,
   if (alignment) {
     alignmentAttr = rewriter.getI64IntegerAttr(*alignment);
   }
-  Value paddedAlloc = memref::AllocOp::create(rewriter, loc, allocType,
-                                              /*dynamicSizes=*/{}, alignmentAttr);
+  Value paddedAlloc =
+      memref::AllocOp::create(rewriter, loc, allocType,
+                              /*dynamicSizes=*/{}, alignmentAttr);
   SmallVector<int64_t> offsets(shape.size(), 0);
   SmallVector<int64_t> strides(shape.size(), 1);
   Value subview =

@@ -1190,7 +1190,6 @@ iree_generated_e2e_runner_test(
     "requires-gpu-sm80"
 )
 
-# F16 accumulator tests using NV_MMA_SYNC_F16_16x8x16_F16
 iree_generated_e2e_runner_test(
   NAME
     e2e_matmul_cuda_vecdist_f16_f16
