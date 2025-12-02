@@ -123,6 +123,7 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::WMMAR3_F16_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F16_16x16x16_F16:
   case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
+  case MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16:
   case MMAIntrinsic::WMMA_F16_16x16x32_F16:
     return {f16, f16, f16};
   case MMAIntrinsic::MFMA_F32_16x16x8_BF16:
@@ -500,6 +501,7 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
       return gfx12WmmaAcc16x16;
     }
   case MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16:
+  case MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16:
     switch (operandIndex) {
     case kMMAOperandLhs:
       return {/*outer=*/{2, 2}, /*thread=*/{8, 4}, /*strides=*/{4, 1},
@@ -669,7 +671,8 @@ static VectorType getThreadVectorType(MLIRContext *context,
                   : isIntrinsicRhs<MMAIntrinsicType>(operandIndex) ? o.bType
                                                                    : o.cType;
   if constexpr (std::is_same_v<MMAIntrinsicType, MMAIntrinsic>) {
-    if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+    if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16 ||
+        intrinsic == MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16) {
       if (operandIndex == kMMAOperandLhs) {
         return VectorType::get({4, 2}, elemType);
       }
@@ -778,7 +781,8 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
                                   layout.nSize, layout.kSize, lhs, rhs, acc)
         .getResult();
   }
-  if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+  if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16 ||
+      intrinsic == MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16) {
     // Transpose the two outer dimensions to model the column-major register
     // ordering expected by mma.sync. The input shape differs between pipelines:
     // VectorDistribute produces 2x2x1x2, TileAndFuse produces 2x1x2x2.

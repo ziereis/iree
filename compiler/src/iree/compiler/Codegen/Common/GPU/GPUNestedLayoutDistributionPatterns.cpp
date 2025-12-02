@@ -407,11 +407,12 @@ getMmaKindFromUser(vector::TransferReadOp readOp) {
 static FailureOr<LdMatrixParams>
 inferLdMatrixParamsFromLayout(IREE::VectorExt::NestedLayoutAttr layout,
                               IREE::GPU::MMAAttr mmaKind) {
-  // For now, only support NV_MMA_SYNC_F32_16x8x16_F16
+  // For now, only support NV_MMA_SYNC F16 intrinsics
   IREE::GPU::MMAIntrinsic intrinsic = mmaKind.getIntrinsic();
-  if (intrinsic != IREE::GPU::MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16) {
+  if (intrinsic != IREE::GPU::MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16 &&
+      intrinsic != IREE::GPU::MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16) {
     LDBG("ldmatrix: unsupported MMA intrinsic, only "
-         "NV_MMA_SYNC_F32_16x8x16_F16 supported");
+         "NV_MMA_SYNC_F32_16x8x16_F16 and NV_MMA_SYNC_F16_16x8x16_F16 supported");
     return failure();
   }
 

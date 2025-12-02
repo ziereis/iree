@@ -369,10 +369,12 @@ def get_rocm_test_compilation_infos(
 
 
 def get_cuda_test_compilation_infos(
-    compilation_info_id: CompilationInfoId, lhs_rhs_type: MatrixElemTypeId
+    compilation_info_id: CompilationInfoId,
+    lhs_rhs_type: MatrixElemTypeId,
+    acc_type: Optional[MatrixElemTypeId] = None,
 ):
     """Generate compilation infos for CUDA/NVIDIA GPU tests."""
-    # Only F16 is supported for NV_MMA_SYNC_F32_16x8x16_F16
+    # Only F16 input is supported for NV_MMA_SYNC intrinsics
     if lhs_rhs_type != MatrixElemTypeId.F16:
         return []
 
@@ -384,26 +386,34 @@ def get_cuda_test_compilation_infos(
     else:
         raise ValueError("Unknown pipeline for CUDA")
 
+    # Select intrinsic based on accumulator type
     # NV_MMA_SYNC_F32_16x8x16_F16: M=16, N=8, K=16, input=F16, output=F32
+    # NV_MMA_SYNC_F16_16x8x16_F16: M=16, N=8, K=16, input=F16, output=F16
+    if acc_type == MatrixElemTypeId.F16:
+        intrinsic = "NV_MMA_SYNC_F16_16x8x16_F16"
+    else:
+        # Default to F32 accumulator
+        intrinsic = "NV_MMA_SYNC_F32_16x8x16_F16"
+
     # Subgroup size is 32 (NVIDIA warp size)
     schedules = [
         # Basic single subgroup configurations
-        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 1, 1, 1, 1, 1),
-        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 1, 1, 1, 1, 2),
-        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 1, 1, 1, 2, 1),
-        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 1, 1, 2, 1, 1),
+        MMASchedule(intrinsic, 1, 1, 1, 1, 1),
+        MMASchedule(intrinsic, 1, 1, 1, 1, 2),
+        MMASchedule(intrinsic, 1, 1, 1, 2, 1),
+        MMASchedule(intrinsic, 1, 1, 2, 1, 1),
         # Multiple subgroups (warps)
-        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 2, 2, 1, 1, 1),
-        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 2, 2, 2, 2, 2),
-        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 2, 4, 2, 1, 2),
-        MMASchedule("NV_MMA_SYNC_F32_16x8x16_F16", 4, 2, 4, 2, 2),
+        MMASchedule(intrinsic, 2, 2, 1, 1, 1),
+        MMASchedule(intrinsic, 2, 2, 2, 2, 2),
+        MMASchedule(intrinsic, 2, 4, 2, 1, 2),
+        MMASchedule(intrinsic, 4, 2, 4, 2, 2),
     ]
 
     subgroup_size = 32  # NVIDIA warp size
 
     infos = []
     for schedule in schedules:
-        # NV_MMA_SYNC_F32_16x8x16_F16: M=16, N=8, K=16
+        # NV_MMA_SYNC intrinsics: M=16, N=8, K=16
         wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
         wg_tile_n = schedule.n_count * schedule.n_tile_count * 8
         wg_tile_k = schedule.k_tile_count * 16
@@ -426,7 +436,9 @@ def get_cuda_test_compilation_infos(
 
 # Returns the list of CompilationInfo's to use for the CompilationInfoId.
 def get_test_compilation_infos(
-    compilation_info_id: CompilationInfoId, lhs_rhs_type: MatrixElemTypeId
+    compilation_info_id: CompilationInfoId,
+    lhs_rhs_type: MatrixElemTypeId,
+    acc_type: Optional[MatrixElemTypeId] = None,
 ) -> typing.List[typing.Optional[CompilationInfo]]:
     if compilation_info_id == CompilationInfoId.NONE:
         return [None]
@@ -442,7 +454,7 @@ def get_test_compilation_infos(
         CompilationInfoId.LLVMGPUVectorDistributeCUDA,
         CompilationInfoId.LLVMGPUTileAndFuseCUDA,
     ]:
-        return get_cuda_test_compilation_infos(compilation_info_id, lhs_rhs_type)
+        return get_cuda_test_compilation_infos(compilation_info_id, lhs_rhs_type, acc_type)
 
     software_pipeline_depth = 0
     tile_workgroup_size_pairs = []

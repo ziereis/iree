@@ -257,6 +257,7 @@ def WMMA_F16_16x16x128_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"WMMA_F16_16x16x128_F8E
 
 // NV intrinsics for CUDA (mma.sync)
 def NV_MMA_SYNC_F32_16x8x16_F16 : I32EnumAttrCase<"NV_MMA_SYNC_F32_16x8x16_F16", 0x2020>;
+def NV_MMA_SYNC_F16_16x8x16_F16 : I32EnumAttrCase<"NV_MMA_SYNC_F16_16x8x16_F16", 0x2023>;
 
 // NV intrinsics for Vulkan/SPIRV (cooperative matrix)
 def NV_WMMA_F32_16x16x16_F16 : I32EnumAttrCase<"NV_WMMA_F32_16x16x16_F16", 0x2021>;
@@ -362,6 +363,7 @@ def IREEGPU_MMAIntrinsic : IREEGPU_I32EnumAttr<"MMAIntrinsic",
 
       // NV intrinsics (CUDA mma.sync)
       NV_MMA_SYNC_F32_16x8x16_F16,
+      NV_MMA_SYNC_F16_16x8x16_F16,
 
       // NV intrinsics (Vulkan/SPIRV cooperative matrix)
       NV_WMMA_F32_16x16x16_F16,
