@@ -1572,7 +1572,7 @@ builtin.module attributes { transform.with_named_sequence } {
 // CHECK-LABEL: @distribute_transfer_read_ldmatrix_x4_non_transpose
 // CHECK-SAME:    %[[MEM:[a-zA-Z0-9]+]]: memref<16x16xf16, #gpu.address_space<workgroup>>
 // CHECK-DAG:     %[[TID:.+]] = gpu.thread_id  x
-// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (64)
+// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (32)
 // CHECK:         %[[ROW:.+]] = affine.apply #[[$MAP_ROW_X4]]()[%[[DELIN]]#1]
 // CHECK:         %[[COL:.+]] = affine.apply #[[$MAP_COL_X4]]()[%[[DELIN]]#1]
 // CHECK:         %[[LDMATRIX:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW]], %[[COL]]] {numTiles = 4 : i32, transpose = false} : memref<16x16xf16, #gpu.address_space<workgroup>> -> vector<4x2xf16>
@@ -1593,7 +1593,61 @@ func.func @distribute_transfer_read_ldmatrix_x4_non_transpose(%arg0: memref<16x1
 builtin.module attributes { transform.with_named_sequence } {
   transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
     %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
-    transform.iree.test_gpu_vector_distribution %top_level_func : !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func {subgroup_size = 32} : !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// Test ldmatrix x4 non-transpose with non-zero base indices (offset read)
+// Same layout as previous test, but reading from offset [32, 64] in a larger memref
+// Verifies that base indices are correctly incorporated via affine.linearize_index
+
+#layout_lhs_ldmatrix_x4_offset = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile    = [2, 2],
+  thread_tile   = [8, 4],
+  element_tile  = [1, 2],
+
+  subgroup_strides = [1, 1],
+  thread_strides   = [4, 1]
+>
+
+// CHECK-DAG: #[[$MAP_ROW_X4_OFF:.+]] = affine_map<()[s0] -> (s0 mod 8 + (s0 floordiv 16) * 8)>
+// CHECK-DAG: #[[$MAP_COL_X4_OFF:.+]] = affine_map<()[s0] -> ((s0 floordiv 8) * 8 - ((s0 floordiv 8) floordiv 2) * 16)>
+
+// CHECK-LABEL: @distribute_transfer_read_ldmatrix_x4_with_offset
+// CHECK-SAME:    %[[MEM:[a-zA-Z0-9]+]]: memref<128x128xf16, #gpu.address_space<workgroup>>
+// CHECK-DAG:     %[[C64:.+]] = arith.constant 64 : index
+// CHECK-DAG:     %[[C32:.+]] = arith.constant 32 : index
+// CHECK-DAG:     %[[TID:.+]] = gpu.thread_id  x
+// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (32)
+// CHECK:         %[[ROW:.+]] = affine.apply #[[$MAP_ROW_X4_OFF]]()[%[[DELIN]]#1]
+// CHECK:         %[[COL:.+]] = affine.apply #[[$MAP_COL_X4_OFF]]()[%[[DELIN]]#1]
+// CHECK:         %[[ROW_OFF:.+]] = affine.linearize_index [%[[ROW]], %[[C32]]] by (16, 1) : index
+// CHECK:         %[[COL_OFF:.+]] = affine.linearize_index [%[[COL]], %[[C64]]] by (16, 1) : index
+// CHECK:         %[[LDMATRIX:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW_OFF]], %[[COL_OFF]]] {numTiles = 4 : i32, transpose = false} : memref<128x128xf16, #gpu.address_space<workgroup>> -> vector<4x2xf16>
+// CHECK:         %[[CAST:.+]] = vector.shape_cast %[[LDMATRIX]] : vector<4x2xf16> to vector<2x2x1x2xf16>
+// CHECK:         %[[BCAST:.+]] = vector.broadcast %[[CAST]] : vector<2x2x1x2xf16> to vector<1x1x2x2x1x2xf16>
+// CHECK:         %[[SIMD:.+]] = iree_vector_ext.to_simd %[[BCAST]] : vector<1x1x2x2x1x2xf16> -> vector<16x16xf16>
+// CHECK:         return %[[SIMD]]
+func.func @distribute_transfer_read_ldmatrix_x4_with_offset(%arg0: memref<128x128xf16, #gpu.address_space<workgroup>>) -> vector<16x16xf16> {
+  %c32 = arith.constant 32 : index
+  %c64 = arith.constant 64 : index
+  %cst = arith.constant 0.0 : f16
+  %root = vector.transfer_read %arg0[%c32, %c64], %cst {in_bounds = [true, true]}
+                  : memref<128x128xf16, #gpu.address_space<workgroup>>, vector<16x16xf16>
+  %rootl = iree_vector_ext.to_layout %root to layout(#layout_lhs_ldmatrix_x4_offset)
+           {mma_kind = #iree_gpu.mma_layout<NV_MMA_SYNC_F32_16x8x16_F16>} : vector<16x16xf16>
+  func.return %rootl : vector<16x16xf16>
+}
+
+builtin.module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
+    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func {subgroup_size = 32} : !transform.any_op
     transform.yield
   }
 }
@@ -1624,7 +1678,7 @@ builtin.module attributes { transform.with_named_sequence } {
 // CHECK-SAME:    %[[MEM:[a-zA-Z0-9]+]]: memref<16x8xf16, #gpu.address_space<workgroup>>
 // CHECK-DAG:     %[[C0:.+]] = arith.constant 0 : index
 // CHECK-DAG:     %[[TID:.+]] = gpu.thread_id  x
-// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (64)
+// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (32)
 // CHECK:         %[[ROW:.+]] = affine.apply #[[$MAP_ROW_X2]]()[%[[DELIN]]#1]
 // CHECK:         %[[LDMATRIX:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW]], %[[C0]]] {numTiles = 2 : i32, transpose = true} : memref<16x8xf16, #gpu.address_space<workgroup>> -> vector<2x2xf16>
 // CHECK:         %[[CAST:.+]] = vector.shape_cast %[[LDMATRIX]] : vector<2x2xf16> to vector<2x1x2x1xf16>
@@ -1644,7 +1698,7 @@ func.func @distribute_transfer_read_ldmatrix_x2_transpose(%arg0: memref<16x8xf16
 builtin.module attributes { transform.with_named_sequence } {
   transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
     %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
-    transform.iree.test_gpu_vector_distribution %top_level_func : !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func {subgroup_size = 32} : !transform.any_op
     transform.yield
   }
 }
@@ -1673,7 +1727,7 @@ builtin.module attributes { transform.with_named_sequence } {
 // CHECK-SAME:    %[[MEM:[a-zA-Z0-9]+]]: memref<32x32xf16, #gpu.address_space<workgroup>>
 // CHECK-DAG:     %[[C1:.+]] = arith.constant 1 : index
 // CHECK-DAG:     %[[TID:.+]] = gpu.thread_id  x
-// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (64)
+// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (32)
 // CHECK:         %[[ROW:.+]] = affine.apply #[[$MAP_ROW_X4_B]]()[%[[DELIN]]#1]
 // CHECK:         %[[COL:.+]] = affine.apply #[[$MAP_COL_X4_B]]()[%[[DELIN]]#1]
 //                Batch (0, 0)
@@ -1704,7 +1758,7 @@ func.func @distribute_transfer_read_ldmatrix_x4_batched(%arg0: memref<32x32xf16,
 builtin.module attributes { transform.with_named_sequence } {
   transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
     %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
-    transform.iree.test_gpu_vector_distribution %top_level_func : !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func {subgroup_size = 32} : !transform.any_op
     transform.yield
   }
 }
@@ -1734,7 +1788,7 @@ builtin.module attributes { transform.with_named_sequence } {
 // CHECK-DAG:     %[[C0:.+]] = arith.constant 0 : index
 // CHECK-DAG:     %[[C1:.+]] = arith.constant 1 : index
 // CHECK-DAG:     %[[TID:.+]] = gpu.thread_id  x
-// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (64)
+// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (32)
 // CHECK:         %[[ROW:.+]] = affine.apply #[[$MAP_ROW_X2_B]]()[%[[DELIN]]#1]
 //                Batch (0, 0)
 // CHECK:         %[[LD00:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW]], %[[C0]]] {numTiles = 2 : i32, transpose = true}
@@ -1763,7 +1817,7 @@ func.func @distribute_transfer_read_ldmatrix_x2_batched(%arg0: memref<32x16xf16,
 builtin.module attributes { transform.with_named_sequence } {
   transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
     %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
-    transform.iree.test_gpu_vector_distribution %top_level_func : !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func {subgroup_size = 32} : !transform.any_op
     transform.yield
   }
 }

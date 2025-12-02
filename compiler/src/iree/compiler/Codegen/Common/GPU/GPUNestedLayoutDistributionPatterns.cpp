@@ -123,8 +123,14 @@ static SmallVector<Value> getLdMatrixIndicesFromNestedLayout(
     SmallVector<int64_t> sizes = {vectorLayout.getSubgroupTile()[i],
                                   batchTile[i], laneStride, 1};
 
+    // The base index is often not zero, so we can't mark this `disjoint` in
+    // general. However, if `baseIndices[i]` is known to be zero, we can do
+    // this, unlocking potential optimizations.
+    bool disjoint = false;
+    if (std::optional<int64_t> baseConst = getConstantIntValue(baseIndices[i]))
+      disjoint = *baseConst == 0;
     Value memIdx = affine::AffineLinearizeIndexOp::create(b, loc, ids, sizes,
-                                                          /*disjoint=*/true);
+                                                          disjoint);
     memIndices.push_back(memIdx);
   }
   return memIndices;
