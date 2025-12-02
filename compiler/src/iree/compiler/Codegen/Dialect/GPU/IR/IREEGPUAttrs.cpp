@@ -117,10 +117,14 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::WMMAR3_F32_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F32_16x16x16_F16:
   case MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16:
+  case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
   case MMAIntrinsic::WMMA_F32_16x16x32_F16:
     return {f16, f16, f32};
   case MMAIntrinsic::WMMAR3_F16_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F16_16x16x16_F16:
+  case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
+  case MMAIntrinsic::WMMA_F16_16x16x32_F16:
+    return {f16, f16, f16};
   case MMAIntrinsic::MFMA_F32_16x16x8_BF16:
   case MMAIntrinsic::MFMA_F32_32x32x4_BF16:
   case MMAIntrinsic::MFMA_F32_16x16x16_BF16:
@@ -131,8 +135,6 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::WMMAR4_F32_16x16x16_BF16:
   case MMAIntrinsic::WMMA_F32_16x16x32_BF16:
     return {bf16, bf16, f32};
-  case MMAIntrinsic::WMMA_F16_16x16x32_F16:
-    return {f16, f16, f16};
   case MMAIntrinsic::WMMAR3_BF16_16x16x16_BF16:
   case MMAIntrinsic::WMMAR4_BF16_16x16x16_BF16:
   case MMAIntrinsic::WMMA_BF16_16x16x32_BF16:
@@ -510,6 +512,9 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
               /*element=*/{1, 2}};
     }
     return {};
+  case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
+  case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
+    return {};
   }
   assert(false && "unexpected enum value");
   return {};
@@ -555,8 +560,26 @@ struct OpaqueMmaLayout {
   Type cType;
 };
 
+/// Returns the MNK shape for an intrinsic without an implemented concrete
+/// layout.
+static std::tuple<int64_t, int64_t, int64_t>
+getUnsupportedMNKShape(MMAIntrinsic intrinsic) {
+  switch (intrinsic) {
+  case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
+  case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
+    return {16, 16, 16};
+  default:
+    assert(false && "unexpected enum value");
+    return {};
+  }
+}
+
 static std::tuple<int64_t, int64_t, int64_t>
 getMNKShapeFromIntrinsic(MMAIntrinsic intrinsic) {
+  if (intrinsic == MMAIntrinsic::NV_WMMA_F32_16x16x16_F16 ||
+      intrinsic == MMAIntrinsic::NV_WMMA_F16_16x16x16_F16) {
+    return getUnsupportedMNKShape(intrinsic);
+  }
   auto lhs = getSingleSubgroupLayout(intrinsic, kMMAOperandLhs);
   auto rhs = getSingleSubgroupLayout(intrinsic, kMMAOperandRhs);
   return {lhs.outer[0] * lhs.thread[0] * lhs.element[0],
@@ -694,7 +717,12 @@ int64_t MMAAttr::getSubgroupSize() const {
 }
 
 Attribute MMAAttr::getDistributionMappingKind() const {
-  // Explicit distribution currently unsupported for NV intrinsics.
+  // Explicit distribution currently unsupported for NV WMMA intrinsics.
+  MMAIntrinsic intrinsic = getIntrinsic();
+  if (intrinsic == MMAIntrinsic::NV_WMMA_F16_16x16x16_F16 ||
+      intrinsic == MMAIntrinsic::NV_WMMA_F32_16x16x16_F16) {
+    return Attribute();
+  }
   return IREE::GPU::LaneIdAttr::get(getContext(), 0);
 }
 
@@ -757,11 +785,11 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
     // Remove the unit dimension to simplify the transpose.
     auto nonUnitVecType = VectorType::get({2, 2, 2}, builder.getF16Type());
     auto reshaped =
-        builder.create<vector::ShapeCastOp>(loc, nonUnitVecType, lhs);
+        vector::ShapeCastOp::create(builder, loc, nonUnitVecType, lhs);
     auto permAttr = builder.getDenseI64ArrayAttr({1, 0, 2});
-    auto transposed = builder.create<vector::TransposeOp>(loc, nonUnitVecType,
-                                                          reshaped, permAttr);
-    lhs = builder.create<vector::ShapeCastOp>(loc, lhs.getType(), transposed);
+    auto transposed = vector::TransposeOp::create(builder, loc, nonUnitVecType,
+                                                  reshaped, permAttr);
+    lhs = vector::ShapeCastOp::create(builder, loc, lhs.getType(), transposed);
     SmallVector<Attribute> mmaShape{builder.getI64IntegerAttr(layout.mSize),
                                     builder.getI64IntegerAttr(layout.nSize),
                                     builder.getI64IntegerAttr(layout.kSize)};

@@ -293,6 +293,9 @@ setConvolutionVectorDistributionConfig(IREE::GPU::TargetAttr target,
   for (IREE::GPU::MMAAttr mma : target.getWgp().getMma()) {
     if (mma.getSubgroupSize() != targetSubgroupSize)
       continue;
+    // Intrinsics without distribution mapping cannot be distributed.
+    if (!mma.getDistributionMappingKind())
+      continue;
     storeMmaInfo(mma, intrinsics);
     // Skip adding any virtual intrinsics since they are not tested for
     // convolutions.
@@ -518,6 +521,9 @@ setMatmulVectorDistributionConfig(IREE::GPU::TargetAttr target,
   MLIRContext *context = op.getContext();
   for (IREE::GPU::MMAAttr mma : target.getWgp().getMma()) {
     if (mma.getSubgroupSize() != targetSubgroupSize)
+      continue;
+    // Intrinsics without distribution mapping cannot be distributed.
+    if (!mma.getDistributionMappingKind())
       continue;
     storeMmaInfo(mma, intrinsics);
     // Skip adding any virtual intrinsics since they are not tested for matmuls.
@@ -764,6 +770,9 @@ static LogicalResult setAttentionIntrinsicBasedVectorDistributionConfig(
   MLIRContext *context = op.getContext();
   for (IREE::GPU::MMAAttr mma : target.getWgp().getMma()) {
     if (mma.getSubgroupSize() != targetSubgroupSize)
+      continue;
+    // Intrinsics without distribution mapping cannot be distributed.
+    if (!mma.getDistributionMappingKind())
       continue;
     storeMmaInfo(mma, intrinsics);
     // Store info on virtual intrinsics based on current mma if any
