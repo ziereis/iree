@@ -1821,3 +1821,112 @@ builtin.module attributes { transform.with_named_sequence } {
     transform.yield
   }
 }
+
+// -----
+
+// Test ldmatrix x2 non-transpose for transposed RHS operand
+// Layout: outer_tile=[1,2], thread_tile=[8,4], element_tile=[1,2], thread_strides=[4,1]
+// This produces an 8x16 tile (1*8*1 x 2*4*2) matching transposed RHS layout
+// Lane index mapping for x2 non-transpose:
+//   row = lane_id % 8
+//   col = ((lane / 8) % 2) * 8
+
+#layout_transposed_rhs_ldmatrix_x2_notrans = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile    = [1, 2],
+  thread_tile   = [8, 4],
+  element_tile  = [1, 2],
+
+  subgroup_strides = [1, 1],
+  thread_strides   = [4, 1]
+>
+
+// CHECK-DAG: #[[$MAP_ROW_X2_NOTRANS:.+]] = affine_map<()[s0] -> (s0 mod 8)>
+// CHECK-DAG: #[[$MAP_COL_X2_NOTRANS:.+]] = affine_map<()[s0] -> ((s0 floordiv 8) * 8 - ((s0 floordiv 8) floordiv 2) * 16)>
+
+// CHECK-LABEL: @distribute_transfer_read_ldmatrix_x2_notranspose
+// CHECK-SAME:    %[[MEM:[a-zA-Z0-9]+]]: memref<8x16xf16, #gpu.address_space<workgroup>>
+// CHECK-DAG:     %[[TID:.+]] = gpu.thread_id  x
+// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (32)
+// CHECK:         %[[ROW:.+]] = affine.apply #[[$MAP_ROW_X2_NOTRANS]]()[%[[DELIN]]#1]
+// CHECK:         %[[COL:.+]] = affine.apply #[[$MAP_COL_X2_NOTRANS]]()[%[[DELIN]]#1]
+// CHECK:         %[[LDMATRIX:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW]], %[[COL]]] {numTiles = 2 : i32, transpose = false} : memref<8x16xf16, #gpu.address_space<workgroup>> -> vector<2x2xf16>
+// CHECK:         vector.shape_cast %[[LDMATRIX]] : vector<2x2xf16> to vector<1x2x1x2xf16>
+// CHECK:         iree_vector_ext.to_simd %{{.*}} : vector<1x1x1x2x1x2xf16> -> vector<8x16xf16>
+func.func @distribute_transfer_read_ldmatrix_x2_notranspose(%arg0: memref<8x16xf16, #gpu.address_space<workgroup>>) -> vector<8x16xf16> {
+  %c0 = arith.constant 0 : index
+  %cst = arith.constant 0.0 : f16
+  %root = vector.transfer_read %arg0[%c0, %c0], %cst {in_bounds = [true, true]}
+                  : memref<8x16xf16, #gpu.address_space<workgroup>>, vector<8x16xf16>
+  %rootl = iree_vector_ext.to_layout %root to layout(#layout_transposed_rhs_ldmatrix_x2_notrans)
+           {mma_kind = #iree_gpu.mma_layout<NV_MMA_SYNC_F32_16x8x16_F16>} : vector<8x16xf16>
+  func.return %rootl : vector<8x16xf16>
+}
+
+builtin.module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
+    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func {subgroup_size = 32} : !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+// Test ldmatrix x2 non-transpose with batch_tile = [2, 2]
+// Layout: batch_tile=[2,2], outer_tile=[1,2], thread_tile=[8,4], element_tile=[1,2], thread_strides=[4,1]
+// This produces a 16x32 tile (2*1*8*1 x 2*2*4*2) with 4 ldmatrix operations (one per batch)
+
+#layout_transposed_rhs_ldmatrix_x2_notrans_batched = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1],
+  batch_tile    = [2, 2],
+  outer_tile    = [1, 2],
+  thread_tile   = [8, 4],
+  element_tile  = [1, 2],
+
+  subgroup_strides = [1, 1],
+  thread_strides   = [4, 1]
+>
+
+// CHECK-DAG: #[[$MAP_ROW_X2_NTB:.+]] = affine_map<()[s0] -> (s0 mod 8)>
+
+// CHECK-LABEL: @distribute_transfer_read_ldmatrix_x2_notranspose_batched
+// CHECK-SAME:    %[[MEM:[a-zA-Z0-9]+]]: memref<16x32xf16, #gpu.address_space<workgroup>>
+// CHECK-DAG:     %[[C1:.+]] = arith.constant 1 : index
+// CHECK-DAG:     %[[TID:.+]] = gpu.thread_id  x
+// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (32)
+// CHECK:         %[[ROW:.+]] = affine.apply #[[$MAP_ROW_X2_NTB]]()[%[[DELIN]]#1]
+// CHECK:         %[[COL:.+]] = affine.apply {{.*}}()[%[[DELIN]]#1]
+//                Batch (0, 0)
+// CHECK:         %[[LD00:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW]], %[[COL]]] {numTiles = 2 : i32, transpose = false}
+// CHECK:         vector.shape_cast %[[LD00]] : vector<2x2xf16> to vector<1x2x1x2xf16>
+//                Batch (0, 1) - column offset
+// CHECK:         %[[COL1:.+]] = affine.linearize_index disjoint [%[[C1]], %[[COL]]] by (2, 16)
+// CHECK:         %[[LD01:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW]], %[[COL1]]] {numTiles = 2 : i32, transpose = false}
+// CHECK:         vector.shape_cast %[[LD01]] : vector<2x2xf16> to vector<1x2x1x2xf16>
+//                Batch (1, 0) - row offset
+// CHECK:         %[[ROW1:.+]] = affine.linearize_index disjoint [%[[C1]], %[[ROW]]] by (2, 8)
+// CHECK:         %[[LD10:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW1]], %[[COL]]] {numTiles = 2 : i32, transpose = false}
+// CHECK:         vector.shape_cast %[[LD10]] : vector<2x2xf16> to vector<1x2x1x2xf16>
+//                Batch (1, 1) - both offsets
+// CHECK:         %[[LD11:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW1]], %[[COL1]]] {numTiles = 2 : i32, transpose = false}
+// CHECK:         vector.shape_cast %[[LD11]] : vector<2x2xf16> to vector<1x2x1x2xf16>
+// CHECK:         iree_vector_ext.to_simd %{{.*}} : vector<2x2x1x2x1x2xf16> -> vector<16x32xf16>
+func.func @distribute_transfer_read_ldmatrix_x2_notranspose_batched(%arg0: memref<16x32xf16, #gpu.address_space<workgroup>>) -> vector<16x32xf16> {
+  %c0 = arith.constant 0 : index
+  %cst = arith.constant 0.0 : f16
+  %root = vector.transfer_read %arg0[%c0, %c0], %cst {in_bounds = [true, true]}
+                  : memref<16x32xf16, #gpu.address_space<workgroup>>, vector<16x32xf16>
+  %rootl = iree_vector_ext.to_layout %root to layout(#layout_transposed_rhs_ldmatrix_x2_notrans_batched)
+           {mma_kind = #iree_gpu.mma_layout<NV_MMA_SYNC_F32_16x8x16_F16>} : vector<16x32xf16>
+  func.return %rootl : vector<16x32xf16>
+}
+
+builtin.module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
+    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func {subgroup_size = 32} : !transform.any_op
+    transform.yield
+  }
+}

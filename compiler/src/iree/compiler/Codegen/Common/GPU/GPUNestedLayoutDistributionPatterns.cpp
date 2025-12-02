@@ -456,6 +456,7 @@ struct DistributeTransferReadToLdMatrix final
   /// Compute lane-to-row/col mapping based on ldmatrix parameters.
   /// For x4 non-transpose: row = (lane%8) + (lane/16)*8, col = ((lane/8)%2)*8
   /// For x2 transpose: row = lane%16, col = 0
+  /// For x2 non-transpose: row = lane%8, col = ((lane/8)%2)*8
   /// Returns failure for unsupported configurations.
   FailureOr<std::pair<Value, Value>>
   computeLdMatrixLaneIndices(OpBuilder &b, Location loc, Value laneId,
@@ -476,6 +477,13 @@ struct DistributeTransferReadToLdMatrix final
       rowMap = AffineMap::get(1, 0, d0 % 16, ctx);
       // col = 0
       colMap = AffineMap::get(1, 0, b.getAffineConstantExpr(0), ctx);
+    } else if (params.numTiles == 2 && !params.transpose) {
+      // x2 non-transpose: 8x16 tile (for transposed matmul RHS)
+      // Loads 2 horizontally-adjacent 8x8 tiles
+      // row = lane % 8
+      rowMap = AffineMap::get(1, 0, d0 % 8, ctx);
+      // col = ((lane / 8) % 2) * 8
+      colMap = AffineMap::get(1, 0, (d0.floorDiv(8) % 2) * 8, ctx);
     } else {
       // Unsupported configuration
       return failure();
