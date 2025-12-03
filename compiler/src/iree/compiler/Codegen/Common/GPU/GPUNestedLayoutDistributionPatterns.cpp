@@ -456,9 +456,6 @@ struct DistributeTransferReadToLdMatrix final
         subgroupSize(subgroupSize) {}
 
   /// Compute lane-to-row/col mapping based on ldmatrix parameters.
-  /// For x4 non-transpose: row = (lane%8) + (lane/16)*8, col = ((lane/8)%2)*8
-  /// For x2 transpose: row = lane%16, col = 0
-  /// For x2 non-transpose: row = lane%8, col = ((lane/8)%2)*8
   /// Returns failure for unsupported configurations.
   FailureOr<std::pair<Value, Value>>
   computeLdMatrixLaneIndices(OpBuilder &b, Location loc, Value laneId,
@@ -480,7 +477,7 @@ struct DistributeTransferReadToLdMatrix final
       // col = 0
       colMap = AffineMap::get(1, 0, b.getAffineConstantExpr(0), ctx);
     } else if (params.numTiles == 2 && !params.transpose) {
-      // x2 non-transpose: 8x16 tile (for transposed matmul RHS)
+      // x2 non-transpose: 8x16 tile
       // Loads 2 horizontally-adjacent 8x8 tiles
       // row = lane % 8
       rowMap = AffineMap::get(1, 0, d0 % 8, ctx);
@@ -499,7 +496,7 @@ struct DistributeTransferReadToLdMatrix final
   LogicalResult matchAndRewrite(vector::TransferReadOp readOp,
                                 DistributionSignature &signature,
                                 PatternRewriter &rewriter) const override {
-    // 1. Check if source is shared memory
+    // Check if source is shared memory
     auto memrefType = dyn_cast<MemRefType>(readOp.getBase().getType());
     if (!memrefType) {
       return rewriter.notifyMatchFailure(readOp, "source is not a memref");
@@ -508,19 +505,19 @@ struct DistributeTransferReadToLdMatrix final
       return rewriter.notifyMatchFailure(readOp, "source is not shared memory");
     }
 
-    // 2. Check element type is f16 (required for ldmatrix)
+    // Check element type is f16
     Type elementType = memrefType.getElementType();
     if (!elementType.isF16()) {
       return rewriter.notifyMatchFailure(readOp, "element type is not f16");
     }
 
-    // 3. Find consuming to_layout with mma_kind
+    // Find consuming to_layout with mma_kind
     FailureOr<IREE::GPU::MMAAttr> mmaKind = getMmaKindFromUser(readOp);
     if (failed(mmaKind)) {
       return rewriter.notifyMatchFailure(readOp, "no mma_kind from user");
     }
 
-    // 4. Get layout and infer ldmatrix parameters
+    // Get layout and infer ldmatrix parameters
     NestedLayoutAttr vectorLayout =
         dyn_cast<NestedLayoutAttr>(signature[readOp.getResult()]);
     if (!vectorLayout) {
@@ -534,7 +531,7 @@ struct DistributeTransferReadToLdMatrix final
           readOp, "ldmatrix not applicable for this layout/MMA kind");
     }
 
-    // 5. Check for unsupported features
+    // Check for unsupported features
     if (readOp.getMask()) {
       return rewriter.notifyMatchFailure(readOp, "masked reads not supported");
     }
@@ -558,7 +555,6 @@ struct DistributeTransferReadToLdMatrix final
                                          "failed to compute subgroup indices");
     }
 
-    // 6. Compute ldmatrix address based on params
     auto laneIndicesResult =
         computeLdMatrixLaneIndices(rewriter, loc, laneId, *params);
     if (failed(laneIndicesResult)) {
@@ -567,7 +563,7 @@ struct DistributeTransferReadToLdMatrix final
     }
     auto [laneRow, laneCol] = *laneIndicesResult;
 
-    // 9. Compute the distributed result shape
+    // Compute the distributed result shape
     SmallVector<int64_t> distShape = vectorLayout.getDistributedShape();
     int64_t rank = vectorLayout.getRank();
 
@@ -576,35 +572,31 @@ struct DistributeTransferReadToLdMatrix final
     auto ldmatrixResultType =
         VectorType::get({params->numTiles, 2}, elementType);
 
-    // Initialize the full distributed vector
     auto fullDistType = VectorType::get(distShape, elementType);
-    Value acc = arith::ConstantOp::create(rewriter, loc, fullDistType,
-                                          rewriter.getZeroAttr(fullDistType));
+    Value distResult = arith::ConstantOp::create(
+        rewriter, loc, fullDistType, rewriter.getZeroAttr(fullDistType));
 
-    // Get base indices
     ValueRange baseIndices = readOp.getIndices();
 
     // For ldmatrix, we iterate over batch dimensions only.
     // Each ldmatrix call loads all outer+element values for one MMA tile.
     SmallVector<int64_t> tileShape(distShape);
     for (int64_t i = 0; i < rank; ++i) {
-      tileShape[i] = 1; // Iterate over each batch position
+      tileShape[i] = 1;
     }
 
     // Iterate over batch tiles (one ldmatrix per MMA tile)
-    // Lane offsets apply to the last two dimensions (row, col)
     SmallVector<Value> laneOffsets = {laneRow, laneCol};
 
     for (SmallVector<int64_t> offsets :
          StaticTileOffsetRange(distShape, tileShape)) {
-      // offsets: [batch0, batch1, 0, 0, 0, 0] (outer/element start at 0)
+      // offsets: [batch0, batch1, 0, 0, 0, 0]
       ArrayRef<int64_t> batchOffsets(offsets.data(), rank);
 
       SmallVector<Value> memIndices = getLdMatrixIndicesFromNestedLayout(
           rewriter, baseIndices, batchOffsets, vectorLayout, warpIndices,
           laneOffsets);
 
-      // Create the ldmatrix op
       Value ldmatrixResult = nvgpu::LdMatrixOp::create(
           rewriter, loc, ldmatrixResultType, readOp.getBase(), memIndices,
           params->transpose, params->numTiles);
@@ -627,11 +619,9 @@ struct DistributeTransferReadToLdMatrix final
       Value shapeCast = vector::ShapeCastOp::create(rewriter, loc, perBatchType,
                                                     ldmatrixResult);
 
-      // Insert into the accumulator at the batch position.
-      // offsets contains [batch0, batch1, 0, 0, 0, 0] - we use only the batch
-      // part.
       SmallVector<int64_t> batchPos(offsets.begin(), offsets.begin() + rank);
-      acc = vector::InsertOp::create(rewriter, loc, shapeCast, acc, batchPos);
+      distResult = vector::InsertOp::create(rewriter, loc, shapeCast,
+                                            distResult, batchPos);
     }
 
     // Set 16-byte alignment requirement for ldmatrix on the source allocation.
@@ -643,7 +633,8 @@ struct DistributeTransferReadToLdMatrix final
       }
     }
 
-    replaceOpWithDistributedValues(rewriter, readOp, cast<VectorValue>(acc));
+    replaceOpWithDistributedValues(rewriter, readOp,
+                                   cast<VectorValue>(distResult));
     return success();
   }
 

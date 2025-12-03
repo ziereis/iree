@@ -1549,11 +1549,8 @@ builtin.module attributes { transform.with_named_sequence } {
 // -----
 
 // Test ldmatrix x4 non-transpose for LHS operand
-// Layout: outer_tile=[2,2], thread_tile=[8,4], element_tile=[1,2], thread_strides=[4,1]
-// This produces a 16x16 tile (2*8*1 x 2*4*2) matching LHS of NV_MMA_SYNC_F32_16x8x16_F16
+// This produces a 16x16 tile matching LHS of NV_MMA_SYNC_F32_16x8x16_F16
 // Lane index mapping for x4 non-transpose:
-//   row = lane_id % 8 + (lane_id / 16) * 8
-//   col = ((lane_id / 8) % 2) * 8
 
 #layout_lhs_ldmatrix_x4 = #iree_vector_ext.nested_layout<
   subgroup_tile = [1, 1],
@@ -1600,7 +1597,7 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // -----
 
-// Test ldmatrix x4 non-transpose with non-zero base indices (offset read)
+// Test ldmatrix x4 non-transpose with non-zero base indices
 // Same layout as previous test, but reading from offset [32, 64] in a larger memref
 // Verifies that base indices are correctly incorporated via affine.linearize_index
 
@@ -1654,60 +1651,7 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // -----
 
-// Test ldmatrix x2 transpose for RHS operand
-// Layout: outer_tile=[2,1], thread_tile=[4,8], element_tile=[2,1], thread_strides=[1,4]
-// This produces a 16x8 tile (2*4*2 x 1*8*1) matching RHS of NV_MMA_SYNC_F32_16x8x16_F16
-// Lane index mapping for x2 transpose:
-//   row = lane_id % 16
-//   col = 0 (constant)
-
-#layout_rhs_ldmatrix_x2_transpose = #iree_vector_ext.nested_layout<
-  subgroup_tile = [1, 1],
-  batch_tile    = [1, 1],
-  outer_tile    = [2, 1],
-  thread_tile   = [4, 8],
-  element_tile  = [2, 1],
-
-  subgroup_strides = [1, 1],
-  thread_strides   = [1, 4]
->
-
-// CHECK-DAG: #[[$MAP_ROW_X2:.+]] = affine_map<()[s0] -> (s0 mod 16)>
-
-// CHECK-LABEL: @distribute_transfer_read_ldmatrix_x2_transpose
-// CHECK-SAME:    %[[MEM:[a-zA-Z0-9]+]]: memref<16x8xf16, #gpu.address_space<workgroup>>
-// CHECK-DAG:     %[[C0:.+]] = arith.constant 0 : index
-// CHECK-DAG:     %[[TID:.+]] = gpu.thread_id  x
-// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (32)
-// CHECK:         %[[ROW:.+]] = affine.apply #[[$MAP_ROW_X2]]()[%[[DELIN]]#1]
-// CHECK:         %[[LDMATRIX:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW]], %[[C0]]] {numTiles = 2 : i32, transpose = true} : memref<16x8xf16, #gpu.address_space<workgroup>> -> vector<2x2xf16>
-// CHECK:         %[[CAST:.+]] = vector.shape_cast %[[LDMATRIX]] : vector<2x2xf16> to vector<2x1x2x1xf16>
-// CHECK:         %[[BCAST:.+]] = vector.broadcast %[[CAST]] : vector<2x1x2x1xf16> to vector<1x1x2x1x2x1xf16>
-// CHECK:         %[[SIMD:.+]] = iree_vector_ext.to_simd %[[BCAST]] : vector<1x1x2x1x2x1xf16> -> vector<16x8xf16>
-// CHECK:         return %[[SIMD]]
-func.func @distribute_transfer_read_ldmatrix_x2_transpose(%arg0: memref<16x8xf16, #gpu.address_space<workgroup>>) -> vector<16x8xf16> {
-  %c0 = arith.constant 0 : index
-  %cst = arith.constant 0.0 : f16
-  %root = vector.transfer_read %arg0[%c0, %c0], %cst {in_bounds = [true, true]}
-                  : memref<16x8xf16, #gpu.address_space<workgroup>>, vector<16x8xf16>
-  %rootl = iree_vector_ext.to_layout %root to layout(#layout_rhs_ldmatrix_x2_transpose)
-           {mma_kind = #iree_gpu.mma_layout<NV_MMA_SYNC_F32_16x8x16_F16>} : vector<16x8xf16>
-  func.return %rootl : vector<16x8xf16>
-}
-
-builtin.module attributes { transform.with_named_sequence } {
-  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
-    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
-    transform.iree.test_gpu_vector_distribution %top_level_func {subgroup_size = 32} : !transform.any_op
-    transform.yield
-  }
-}
-
-// -----
-
 // Test ldmatrix x4 non-transpose with batch_tile = [2, 2]
-// Layout: batch_tile=[2,2], outer_tile=[2,2], thread_tile=[8,4], element_tile=[1,2], thread_strides=[4,1]
-// This produces a 32x32 tile (2*2*8*1 x 2*2*4*2) with 4 ldmatrix operations (one per batch)
 
 #layout_lhs_ldmatrix_x4_batched = #iree_vector_ext.nested_layout<
   subgroup_tile = [1, 1],
@@ -1765,9 +1709,55 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // -----
 
+// Test ldmatrix x2 transpose
+// This produces a 16x8 tile matching RHS of NV_MMA_SYNC_F32_16x8x16_F16
+
+#layout_rhs_ldmatrix_x2_transpose = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile    = [2, 1],
+  thread_tile   = [4, 8],
+  element_tile  = [2, 1],
+
+  subgroup_strides = [1, 1],
+  thread_strides   = [1, 4]
+>
+
+// CHECK-DAG: #[[$MAP_ROW_X2:.+]] = affine_map<()[s0] -> (s0 mod 16)>
+
+// CHECK-LABEL: @distribute_transfer_read_ldmatrix_x2_transpose
+// CHECK-SAME:    %[[MEM:[a-zA-Z0-9]+]]: memref<16x8xf16, #gpu.address_space<workgroup>>
+// CHECK-DAG:     %[[C0:.+]] = arith.constant 0 : index
+// CHECK-DAG:     %[[TID:.+]] = gpu.thread_id  x
+// CHECK:         %[[DELIN:.+]]:2 = affine.delinearize_index %[[TID]] into (32)
+// CHECK:         %[[ROW:.+]] = affine.apply #[[$MAP_ROW_X2]]()[%[[DELIN]]#1]
+// CHECK:         %[[LDMATRIX:.+]] = nvgpu.ldmatrix %[[MEM]][%[[ROW]], %[[C0]]] {numTiles = 2 : i32, transpose = true} : memref<16x8xf16, #gpu.address_space<workgroup>> -> vector<2x2xf16>
+// CHECK:         %[[CAST:.+]] = vector.shape_cast %[[LDMATRIX]] : vector<2x2xf16> to vector<2x1x2x1xf16>
+// CHECK:         %[[BCAST:.+]] = vector.broadcast %[[CAST]] : vector<2x1x2x1xf16> to vector<1x1x2x1x2x1xf16>
+// CHECK:         %[[SIMD:.+]] = iree_vector_ext.to_simd %[[BCAST]] : vector<1x1x2x1x2x1xf16> -> vector<16x8xf16>
+// CHECK:         return %[[SIMD]]
+func.func @distribute_transfer_read_ldmatrix_x2_transpose(%arg0: memref<16x8xf16, #gpu.address_space<workgroup>>) -> vector<16x8xf16> {
+  %c0 = arith.constant 0 : index
+  %cst = arith.constant 0.0 : f16
+  %root = vector.transfer_read %arg0[%c0, %c0], %cst {in_bounds = [true, true]}
+                  : memref<16x8xf16, #gpu.address_space<workgroup>>, vector<16x8xf16>
+  %rootl = iree_vector_ext.to_layout %root to layout(#layout_rhs_ldmatrix_x2_transpose)
+           {mma_kind = #iree_gpu.mma_layout<NV_MMA_SYNC_F32_16x8x16_F16>} : vector<16x8xf16>
+  func.return %rootl : vector<16x8xf16>
+}
+
+builtin.module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
+    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func {subgroup_size = 32} : !transform.any_op
+    transform.yield
+  }
+}
+
+
+// -----
+
 // Test ldmatrix x2 transpose with batch_tile = [2, 2]
-// Layout: batch_tile=[2,2], outer_tile=[2,1], thread_tile=[4,8], element_tile=[2,1], thread_strides=[1,4]
-// This produces a 32x16 tile (2*2*4*2 x 2*1*8*1) with 4 ldmatrix operations (one per batch)
 
 #layout_rhs_ldmatrix_x2_batched = #iree_vector_ext.nested_layout<
   subgroup_tile = [1, 1],
@@ -1824,12 +1814,7 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // -----
 
-// Test ldmatrix x2 non-transpose for transposed RHS operand
-// Layout: outer_tile=[1,2], thread_tile=[8,4], element_tile=[1,2], thread_strides=[4,1]
-// This produces an 8x16 tile (1*8*1 x 2*4*2) matching transposed RHS layout
-// Lane index mapping for x2 non-transpose:
-//   row = lane_id % 8
-//   col = ((lane / 8) % 2) * 8
+// Test ldmatrix x2 non-transpose
 
 #layout_transposed_rhs_ldmatrix_x2_notrans = #iree_vector_ext.nested_layout<
   subgroup_tile = [1, 1],
@@ -1875,8 +1860,6 @@ builtin.module attributes { transform.with_named_sequence } {
 // -----
 
 // Test ldmatrix x2 non-transpose with batch_tile = [2, 2]
-// Layout: batch_tile=[2,2], outer_tile=[1,2], thread_tile=[8,4], element_tile=[1,2], thread_strides=[4,1]
-// This produces a 16x32 tile (2*1*8*1 x 2*2*4*2) with 4 ldmatrix operations (one per batch)
 
 #layout_transposed_rhs_ldmatrix_x2_notrans_batched = #iree_vector_ext.nested_layout<
   subgroup_tile = [1, 1],
