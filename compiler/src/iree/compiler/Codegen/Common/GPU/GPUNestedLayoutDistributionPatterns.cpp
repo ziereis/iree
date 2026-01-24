@@ -42,21 +42,78 @@ static bool isBroadcast(AffineExpr expr) {
   return false;
 }
 
+/// Given physical outer offsets that are created from row-major iteration,
+/// compute the logical outer offsets based on outerStrides.
+///
+/// The algorithm:
+/// 1. Linearize physical offsets using row-major strides to get a linear index
+/// 2. Delinearize using outerStrides
+static SmallVector<int64_t>
+getLogicalOuterOffsets(ArrayRef<int64_t> physicalOuterOffsets,
+                       ArrayRef<int64_t> outerTile,
+                       ArrayRef<int64_t> outerStrides) {
+  if (outerStrides.empty()) {
+    return SmallVector<int64_t>(physicalOuterOffsets);
+  }
+
+  int64_t rank = physicalOuterOffsets.size();
+
+  // Compute row-major strides for the outer tile
+  SmallVector<int64_t> rowMajorStrides(rank);
+  int64_t stride = 1;
+  for (int64_t i = rank - 1; i >= 0; --i) {
+    rowMajorStrides[i] = stride;
+    stride *= outerTile[i];
+  }
+
+  // Linearize physical offsets using row-major strides
+  int64_t linearIdx = 0;
+  for (int64_t i = 0; i < rank; ++i) {
+    linearIdx += physicalOuterOffsets[i] * rowMajorStrides[i];
+  }
+
+  // Delinearize using outerStrides.
+  SmallVector<int64_t> logicalOffsets(rank);
+  for (int64_t i = 0; i < rank; ++i) {
+    if (outerStrides[i] == 0) {
+      logicalOffsets[i] = 0;
+    } else {
+      logicalOffsets[i] = (linearIdx / outerStrides[i]) % outerTile[i];
+    }
+  }
+
+  return logicalOffsets;
+}
+
 /// Given a set of base transfer |indices|, |offsets| for the batch/outer
 /// dimensions, and distributed warp and thread indices, computes the indices
 /// of the distributed transfer operation based on the |vectorLayout|.
+///
+/// The |offsets| array contains offsets from row-major iteration.
+/// When outerStrides specifies a different ordering (e.g., column-major),
+/// we compute logical outer offsets for memory access while maintaining
+/// physical ordering for the distributed vector.
 static SmallVector<Value> getTransferIndicesFromNestedLayout(
     OpBuilder &b, ValueRange indices, ArrayRef<int64_t> offsets,
     NestedLayoutAttr vectorLayout, AffineMap permutationMap,
     ArrayRef<Value> warpIndices, ArrayRef<Value> threadIndices) {
 
   int64_t rank = vectorLayout.getRank();
-  // Permute the batch and outer vector offsets to match the order of
-  // the vector dimensions using the inverse of the batch/offset order.
+  // Extract physical offsets from the offsets array.
   ArrayRef<int64_t> batchOffsets(offsets.begin(), rank);
-  ArrayRef<int64_t> outerVectorOffsets(offsets.begin() + rank, rank);
+  ArrayRef<int64_t> physicalOuterOffsets(offsets.begin() + rank, rank);
+
+  // Compute logical outer offsets based on outerStrides.
+  // Physical offsets are from row-major iteration, logical offsets determine
+  // which memory location to access based on the layout's outer ordering.
+  SmallVector<int64_t> logicalOuterOffsets = getLogicalOuterOffsets(
+      physicalOuterOffsets, vectorLayout.getOuterTile(),
+      vectorLayout.getOuterStrides());
 
   SmallVector<Value> slicedIndices(indices);
+  // Iterate over vector dimensions (i) and use permutationMap to find the
+  // corresponding memory dimension (pos). Layout values use [i], memory
+  // indices use [pos].
   for (const auto &[i, dim] : llvm::enumerate(permutationMap.getResults())) {
     // Broadcasted dimension offsets can be used as-is; the read index is
     // invariant of the thread in such cases (and illegal for writes).
@@ -67,9 +124,10 @@ static SmallVector<Value> getTransferIndicesFromNestedLayout(
     Value offset = indices[pos];
     int64_t elementCount = vectorLayout.getElementTile()[i];
     Location loc = offset.getLoc();
+    // Use logical outer offsets for memory index computation.
     SmallVector<Value> ids = {
         warpIndices[i], arith::ConstantIndexOp::create(b, loc, batchOffsets[i]),
-        arith::ConstantIndexOp::create(b, loc, outerVectorOffsets[i]),
+        arith::ConstantIndexOp::create(b, loc, logicalOuterOffsets[i]),
         threadIndices[i], offset};
     // The order in which a vector dimension is "tiled" is
     // subgroups -> batches -> outer vectors -> threads -> elements
@@ -408,6 +466,8 @@ struct DistributeTransferRead final
         // support 0-d vectors...
         acc = slicedRead;
       } else {
+        // Use physical offsets directly for insertion. Memory access order
+        // is handled by getTransferIndicesFromNestedLayout using outerStrides.
         acc = vector::InsertStridedSliceOp::create(
             rewriter, readOp.getLoc(), slicedRead, acc, offsets, strides);
       }
@@ -562,6 +622,8 @@ struct DistributeTransferWrite final
       SmallVector<Value> slicedIndices = getTransferIndicesFromNestedLayout(
           rewriter, indices, offsets, vectorLayout, permMap, warpIndices,
           threadIndices);
+      // Use physical offsets directly for extraction. Memory access order
+      // is handled by getTransferIndicesFromNestedLayout using outerStrides.
       // Extract the "element vector" from the inner most dimensions. All outer
       // dimensions are either unrolled or distributed such that this is a
       // contiguous slice.
@@ -747,6 +809,8 @@ struct DistributeTransferGather final
         // support 0-d vectors...
         acc = slicedGather;
       } else {
+        // Use physical offsets directly for insertion. Memory access order
+        // is handled by getTransferIndicesFromNestedLayout using outerStrides.
         acc = vector::InsertStridedSliceOp::create(
             rewriter, gatherOp.getLoc(), slicedGather, acc, offsets, strides);
       }
@@ -805,6 +869,8 @@ struct DistributeMapScatter final
     SmallVector<int64_t> tileShape = getElementVectorTileShape(vectorLayout);
     for (auto [idx, offsets] :
          llvm::enumerate(StaticTileOffsetRange(distShape, tileShape))) {
+      // Use physical offsets directly for extraction. Memory access order
+      // is handled by getTransferIndicesFromNestedLayout using outerStrides.
       // Extract the "element vector" from the inner most dimensions. All outer
       // dimensions are either unrolled or distributed such that this is a
       // contiguous slice.
@@ -1192,6 +1258,8 @@ struct DistributeMultiReduction final
         llvm::to_vector_of<int64_t>(srcLayout.getElementTile());
     auto subgroupStrides =
         llvm::to_vector_of<int64_t>(srcLayout.getSubgroupStrides());
+    auto outerStrides =
+        llvm::to_vector_of<int64_t>(srcLayout.getOuterStrides());
     auto threadStrides =
         llvm::to_vector_of<int64_t>(srcLayout.getThreadStrides());
 
@@ -1220,6 +1288,7 @@ struct DistributeMultiReduction final
     for (int64_t rDim : reductionDims) {
       batchTileLens[rDim] = 1;
       outerTileLens[rDim] = 1;
+      outerStrides[rDim] = 0;
       elementTileLens[rDim] = 1;
       if (availableThreads.has_value()) {
         int64_t used = llvm::PowerOf2Ceil(subgroupTileLens[rDim]);
@@ -1236,7 +1305,8 @@ struct DistributeMultiReduction final
     }
     bufferReduceLayout = IREE::VectorExt::NestedLayoutAttr::get(
         srcLayout.getContext(), subgroupTileLens, batchTileLens, outerTileLens,
-        threadTileLens, elementTileLens, subgroupStrides, threadStrides);
+        threadTileLens, elementTileLens, subgroupStrides, outerStrides,
+        threadStrides);
     return bufferReduceLayout;
   }
 
@@ -1262,19 +1332,23 @@ struct DistributeMultiReduction final
         llvm::to_vector_of<int64_t>(srcLayout.getElementTile());
     auto subgroupStrides =
         llvm::to_vector_of<int64_t>(srcLayout.getSubgroupStrides());
+    auto outerStrides =
+        llvm::to_vector_of<int64_t>(srcLayout.getOuterStrides());
     auto threadStrides =
         llvm::to_vector_of<int64_t>(srcLayout.getThreadStrides());
     // Replace the reduced tiles with unit dimension.
     for (int64_t rDim : reductionDims) {
       batchTileLens[rDim] = 1;
       outerTileLens[rDim] = 1;
+      outerStrides[rDim] = 0;
       threadTileLens[rDim] = 1;
       elementTileLens[rDim] = 1;
       threadStrides[rDim] = 0;
     }
     auto interSubGroupLayout = IREE::VectorExt::NestedLayoutAttr::get(
         rewriter.getContext(), subgroupTileLens, batchTileLens, outerTileLens,
-        threadTileLens, elementTileLens, subgroupStrides, threadStrides);
+        threadTileLens, elementTileLens, subgroupStrides, outerStrides,
+        threadStrides);
     setSignatureForRedistribution(rewriter, write, {interSubGroupLayout}, {});
   }
 
@@ -1449,8 +1523,9 @@ struct DistributeContract final
       // Create a zero-d layout because we
       // are going to add reduction dims
       // back to handle the partial reduction
-      resLayout = NestedLayoutAttr::get(
-          contractOp.getContext(), ArrayRef<int64_t>{}, {}, {}, {}, {}, {}, {});
+      resLayout = NestedLayoutAttr::get(contractOp.getContext(),
+                                        ArrayRef<int64_t>{}, {}, {}, {}, {}, {},
+                                        {}, {});
     }
 
     Value disLhs = getDistributed(rewriter, contractOp.getLhs(), lhsLayout);
@@ -1553,6 +1628,7 @@ struct DistributeContract final
       }
     }
     SmallVector<int64_t> unitBroadcastTile(reductionThreadTile.size(), 1);
+    SmallVector<int64_t> zeroStrides(reductionThreadTile.size(), 0);
 
     // Manually infer the layout of partial reduction
     // We do this by appending the reduction dims on
@@ -1568,6 +1644,7 @@ struct DistributeContract final
             /*appendThreadLens=*/reductionThreadTile,
             /*appendElementLens=*/unitBroadcastTile,
             /*appendSubgroupStrides=*/reductionSubGroupStrides,
+            /*appendOuterStrides=*/zeroStrides,
             /*appendThreadStrides=*/reductionThreadStrides);
 
     VectorType partialReducedDistributedType =

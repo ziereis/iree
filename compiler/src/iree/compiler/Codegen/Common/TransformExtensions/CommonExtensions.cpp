@@ -1079,7 +1079,8 @@ public:
     }
     ArrayRef<int64_t> empty = {};
     return IREE::VectorExt::NestedLayoutAttr::get(
-        type.getContext(), empty, empty, empty, empty, empty, empty, empty);
+        type.getContext(), empty, empty, empty, empty, empty, empty, empty,
+        empty);
   }
 };
 

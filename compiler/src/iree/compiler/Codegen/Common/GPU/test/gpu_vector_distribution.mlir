@@ -7,6 +7,7 @@
   thread_tile      = [8, 2, 4],
   element_tile     = [1, 8, 2],
   subgroup_strides = [1, 1, 1],
+  outer_strides    = [0, 4, 1],
   thread_strides   = [1, 8, 16]
 >
 
@@ -40,6 +41,7 @@ func.func @distribute_poison() -> vector<128x128x128xf16> {
   thread_tile      = [1, 1],
   element_tile     = [16, 16],
   subgroup_strides = [1, 1],
+  outer_strides    = [0, 0],
   thread_strides   = [1, 1]
 >
 
@@ -72,6 +74,7 @@ func.func @distribute_scf_for(%a: vector<16x16xi32>, %b: vector<16x16xi32>) -> v
   thread_tile      = [],
   element_tile     = [],
   subgroup_strides = [],
+  outer_strides    = [],
   thread_strides   = []
 >
 
@@ -129,6 +132,7 @@ builtin.module attributes { transform.with_named_sequence } {
   thread_tile = [64],
   element_tile = [4],
   subgroup_strides = [1],
+  outer_strides    = [0],
   thread_strides = [1]
 >
 

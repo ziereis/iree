@@ -7,7 +7,7 @@ func.func @mfma_matmul_96x64x16_mm(%lhs: vector<96x16xf16>, %rhs: vector<16x64xf
       %lhs, %rhs, %init : vector<96x16xf16>, vector<16x64xf16> into vector<96x64xf16>
     %1 = iree_vector_ext.to_layout %0 to layout(#iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [3, 2],
                                       outer_tile = [4, 1], thread_tile = [2, 32], element_tile = [4, 1],
-                                      subgroup_strides = [0, 0], thread_strides = [32, 1]>)
+                                      subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [32, 1]>)
                                       {mma_kind = #iree_gpu.mma_layout<MFMA_F32_32x32x8_F16>} : vector<96x64xf16>
   return %1 : vector<96x64xf16>
 }
@@ -31,7 +31,7 @@ func.func @mfma_matmul_96x64x16_mmt(%lhs: vector<96x16xf16>, %rhs: vector<64x16x
       %lhs, %rhs, %init : vector<96x16xf16>, vector<64x16xf16> into vector<96x64xf16>
     %1 = iree_vector_ext.to_layout %0 to layout(#iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [3, 2],
                                       outer_tile = [4, 1], thread_tile = [2, 32], element_tile = [4, 1],
-                                      subgroup_strides = [0, 0], thread_strides = [32, 1]>)
+                                      subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [32, 1]>)
                                       {mma_kind = #iree_gpu.mma_layout<MFMA_F32_32x32x8_F16>} : vector<96x64xf16>
   return %1 : vector<96x64xf16>
 }
@@ -52,7 +52,7 @@ func.func @mfma_matmul_96x64x16_mm_cannot_downcast(%lhs: vector<96x16xf16>, %rhs
       %lhs, %rhs, %init : vector<96x16xf16>, vector<16x64xf16> into vector<96x64xf64>
     %1 = iree_vector_ext.to_layout %0 to layout(#iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [3, 2],
                                       outer_tile = [4, 1], thread_tile = [2, 32], element_tile = [4, 1],
-                                      subgroup_strides = [0, 0], thread_strides = [32, 1]>)
+                                      subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [32, 1]>)
                                       {mma_kind = #iree_gpu.mma_layout<MFMA_F32_32x32x8_F16>} : vector<96x64xf64>
   return %1 : vector<96x64xf64>
 }
@@ -72,7 +72,7 @@ func.func @wmmar3_matmul_48x32x32_mm(%lhs: vector<48x32xf16>, %rhs: vector<32x32
       %lhs, %rhs, %init : vector<48x32xf16>, vector<32x32xf16> into vector<48x32xf16>
     %1 = iree_vector_ext.to_layout %0 to layout(#iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [3, 2],
                                       outer_tile = [8, 1], thread_tile = [2, 16], element_tile = [1, 1],
-                                      subgroup_strides = [0, 0], thread_strides = [16, 1]>)
+                                      subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [16, 1]>)
                                       {mma_kind = #iree_gpu.mma_layout<WMMAR3_F32_16x16x16_F16>} : vector<48x32xf16>
   return %1 : vector<48x32xf16>
 }
@@ -100,7 +100,7 @@ func.func @to_layout_config_matmul_96x64x16_mm(%lhs: vector<96x16xf16>, %rhs: ve
       %lhs, %rhs, %init : vector<96x16xf16>, vector<16x64xf16> into vector<96x64xf16>
     %1 = iree_vector_ext.to_layout %0 to layout(#iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 4],
                                       outer_tile = [1, 1], thread_tile = [16, 4], element_tile = [1, 4],
-                                      subgroup_strides = [0, 0], thread_strides = [1, 16]>)
+                                      subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 16]>)
                                       {mma_kind = #iree_gpu.mma_layout<MFMA_F32_16x16x16_F16>} : vector<96x64xf16>
   return %1 : vector<96x64xf16>
 }

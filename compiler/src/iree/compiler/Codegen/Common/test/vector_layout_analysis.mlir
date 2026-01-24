@@ -8,6 +8,7 @@
   element_tile = [16, 16],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -37,6 +38,7 @@ func.func @propagate_simple(%arr: memref<16x16xf16>, %a: vector<16x16xf16>, %b: 
   element_tile = [16, 32],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -62,6 +64,7 @@ func.func @transfer_read_mask(%arr: memref<16x32xf16>, %a: vector<16x32xf16>, %b
   element_tile = [16, 8, 4],
 
   subgroup_strides = [0, 0, 0],
+  outer_strides    = [0, 0, 0],
   thread_strides   = [0, 0, 0]
 >
 
@@ -86,6 +89,7 @@ func.func @transfer_write_mask(%arr: memref<32x32x32x32xf16>, %d: vector<16x8x4x
   element_tile = [16, 16],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -113,6 +117,7 @@ func.func @enforce_simple(%arr: memref<16x16xf16>, %a: vector<16x16xf16>, %b: ve
   element_tile = [16, 16],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -144,6 +149,7 @@ func.func @propagate_and_enforce(%arr: memref<16x16xf16>, %arr2: memref<16x16xf1
   element_tile = [16, 8],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -179,6 +185,7 @@ func.func @reduction_dim0(%arr: memref<16x16xf16>, %arr2: memref<16xf16>, %a: ve
   element_tile = [16, 8],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -216,6 +223,7 @@ func.func @transpose_and_reduction(%arr: memref<16x16xf16>, %arr2: memref<16xf16
   element_tile = [32, 64],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -227,6 +235,7 @@ func.func @transpose_and_reduction(%arr: memref<16x16xf16>, %arr2: memref<16xf16
   element_tile = [128, 64],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -238,6 +247,7 @@ func.func @transpose_and_reduction(%arr: memref<16x16xf16>, %arr2: memref<16xf16
   element_tile = [128, 32],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -272,6 +282,7 @@ func.func @contract(%A : vector<32x64xf16>, %B : vector<128x64xf16>, %C : vector
   element_tile = [16, 16],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -307,6 +318,7 @@ func.func @gather(%base: memref<16x16xf16>, %arr: memref<16x16xindex>) -> vector
   element_tile = [1, 4],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 1],
   thread_strides   = [2, 1]
 >
 
@@ -318,6 +330,7 @@ func.func @gather(%base: memref<16x16xf16>, %arr: memref<16x16xindex>) -> vector
   element_tile = [1, 8],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [4, 1]
 >
 
@@ -350,6 +363,7 @@ func.func @resolve_select(%A : vector<64x64xf16>, %B : vector<64x64xf16>, %condi
   element_tile = [16, 8],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -394,6 +408,7 @@ func.func @scffor(%arr: memref<16x16xf16>, %arr2: memref<16xf16>, %a: vector<16x
   element_tile = [4, 1],
 
   subgroup_strides = [1, 1],
+  outer_strides    = [0, 0],
   thread_strides   = [1, 4]
 >
 
@@ -425,6 +440,7 @@ func.func @reduction_thread_strides_dim0(%arr: memref<16x16xf16>, %a: vector<16x
   element_tile = [4, 1],
 
   subgroup_strides = [1, 1],
+  outer_strides    = [0, 0],
   thread_strides   = [1, 4]
 >
 
@@ -456,6 +472,7 @@ func.func @reduction_thread_strides_dim1(%arr: memref<16x16xf16>, %a: vector<16x
   element_tile = [4, 1, 2],
 
   subgroup_strides = [1, 2, 2],
+  outer_strides    = [0, 0, 0],
   thread_strides   = [1, 4, 32]
 >
 
@@ -486,6 +503,7 @@ func.func @transpose_3d(%arr: memref<32x32x32xf16>) -> () {
   element_tile = [1, 32],
 
   subgroup_strides = [1, 1],
+  outer_strides = [0, 0],
   thread_strides = [1, 32]
 >
 
@@ -525,6 +543,7 @@ func.func @broadcast_transpose(%quant :  memref<128x128xi4>, %scale : memref<128
     element_tile = [4, 1],
 
     subgroup_strides = [0, 0],
+    outer_strides = [1, 0],
     thread_strides = [32, 1]
 >
 
@@ -558,6 +577,7 @@ func.func @handle_multiuse_constant(%lhs: vector<96x64xf16>, %rhs: vector<96x64x
   element_tile  = [64],
 
   subgroup_strides = [0],
+  outer_strides    = [0],
   thread_strides   = [0]
 >
 
@@ -569,6 +589,7 @@ func.func @handle_multiuse_constant(%lhs: vector<96x64xf16>, %rhs: vector<96x64x
   element_tile  = [1],
 
   subgroup_strides = [0],
+  outer_strides    = [0],
   thread_strides   = [0]
 >
 
@@ -595,6 +616,7 @@ func.func @handle_multiuse_step(%lhs: vector<64xindex>, %rhs: vector<64xindex>) 
   element_tile = [4, 1, 2],
 
   subgroup_strides = [1, 2, 2],
+  outer_strides    = [0, 0, 0],
   thread_strides   = [1, 4, 32]
 >
 
@@ -618,6 +640,7 @@ func.func @invalid_rank_nested_layout_anchor(%a: vector<16x16xf16>, %b: vector<1
   element_tile = [2, 2],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [1, 8]
 >
 
@@ -625,7 +648,7 @@ func.func @invalid_rank_nested_layout_anchor(%a: vector<16x16xf16>, %b: vector<1
 func.func @invalid_size_nested_layout_anchor(%a: vector<16x16xf16>, %b: vector<16x16xf16>) -> vector<16x16xf16> {
   %c = arith.addf %a, %b : vector<16x16xf16>
   %cl = iree_vector_ext.to_layout %c to layout(#layout2) : vector<16x16xf16>
-  // expected-error @above {{Vector shape: [16, 16] does not match the layout (nested_layout<subgroup_tile = [1, 1], batch_tile = [2, 4], outer_tile = [1, 1], thread_tile = [8, 2], element_tile = [2, 2], subgroup_strides = [0, 0], thread_strides = [1, 8]>) at dim 0. Dimension expected by layout: 32 actual: 16}}
+  // expected-error @above {{Vector shape: [16, 16] does not match the layout (nested_layout<subgroup_tile = [1, 1], batch_tile = [2, 4], outer_tile = [1, 1], thread_tile = [8, 2], element_tile = [2, 2], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 8]>) at dim 0. Dimension expected by layout: 32 actual: 16}}
   func.return %cl : vector<16x16xf16>
 }
 
@@ -639,6 +662,7 @@ func.func @invalid_size_nested_layout_anchor(%a: vector<16x16xf16>, %b: vector<1
   element_tile = [16, 8],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -673,6 +697,7 @@ func.func @scffor(%arr: memref<16x16xf16>, %arr2: memref<16xf16>, %a: vector<16x
   element_tile = [1],
 
   subgroup_strides = [1],
+  outer_strides = [0],
   thread_strides = [0]
 >
 
@@ -684,6 +709,7 @@ func.func @scffor(%arr: memref<16x16xf16>, %arr2: memref<16xf16>, %a: vector<16x
   element_tile = [1, 8],
 
   subgroup_strides = [1, 0],
+  outer_strides = [0, 0],
   thread_strides = [0, 0]
 >
 

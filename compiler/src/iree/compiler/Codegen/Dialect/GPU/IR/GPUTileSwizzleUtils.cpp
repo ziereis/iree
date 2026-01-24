@@ -126,6 +126,7 @@ static TileSwizzle getIntrinsicSwizzle(MMAIntrinsicTy intrinsic,
     swapRHSKAndN(layout.outer);
     swapRHSKAndN(layout.thread);
     swapRHSKAndN(layout.tstrides);
+    swapRHSKAndN(layout.ostrides);
     swapRHSKAndN(layout.element);
   }
 
@@ -193,6 +194,13 @@ static TileSwizzle getIntrinsicSwizzle(MMAIntrinsicTy intrinsic,
     if (o != 1) {
       expand(swizzle, i, {Kind::Internal, o});
     }
+  }
+  assert((layout.outer.size() == 2 ||
+          (layout.outer.size() == 3 && layout.outer[2] == 1)) &&
+         "expected inner outer dim to be 1 for blocked LHS or RHS");
+  if (layout.outer[0] != 1 && layout.outer[1] != 1 &&
+      layout.ostrides[0] > layout.ostrides[1]) {
+    std::swap(swizzle.permutation[0], swizzle.permutation[1]);
   }
   return swizzle;
 }

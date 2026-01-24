@@ -8,6 +8,7 @@
   element_tile  = [1],
 
   subgroup_strides = [0],
+  outer_strides    = [0],
   thread_strides   = [16]
 >
 
@@ -42,6 +43,7 @@ builtin.module attributes { transform.with_named_sequence } {
   element_tile  = [2],
 
   subgroup_strides = [0],
+  outer_strides    = [0],
   thread_strides   = [2]
 >
 
@@ -78,6 +80,7 @@ builtin.module attributes { transform.with_named_sequence } {
   element_tile  = [2],
 
   subgroup_strides = [8],
+  outer_strides    = [0],
   thread_strides   = [2]
 >
 
@@ -119,6 +122,7 @@ builtin.module attributes { transform.with_named_sequence } {
   element_tile  = [8],
 
   subgroup_strides = [0],
+  outer_strides    = [0],
   thread_strides   = [1]
 >
 

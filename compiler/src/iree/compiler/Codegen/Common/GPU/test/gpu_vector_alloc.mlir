@@ -8,6 +8,7 @@
   element_tile = [4, 1],
 
   subgroup_strides = [1, 1],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 

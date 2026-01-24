@@ -194,6 +194,8 @@ struct MMASingleSubgroupLayout {
   SmallVector<int64_t, 2> thread;
   // Strides corresponding to the cross-thread dimensions.
   SmallVector<int64_t, 2> tstrides;
+  // Strides corresponding to the outer dimensions.
+  SmallVector<int64_t, 2> ostrides;
   // Internal dimensions (as in TileSwizzle::Dim::Kind::Internal) that are
   // inner-most in the layout. This happens when an MMA op, seen on a single
   // thread, has an operand that consists of multiple elements, and these elems

@@ -43,6 +43,7 @@ NestedLayoutAttr::project(ArrayRef<bool> droppedDims) const {
   SmallVector<int64_t> threadCount;
   SmallVector<int64_t> elementCount;
   SmallVector<int64_t> subgroupStrides;
+  SmallVector<int64_t> outerStrides;
   SmallVector<int64_t> threadStrides;
   int64_t count = 0;
   // Map to track pre-projection -> post-projection indices. Used to update
@@ -56,6 +57,7 @@ NestedLayoutAttr::project(ArrayRef<bool> droppedDims) const {
       threadCount.push_back(getThreadTile()[idx]);
       elementCount.push_back(getElementTile()[idx]);
       subgroupStrides.push_back(getSubgroupStrides()[idx]);
+      outerStrides.push_back(getOuterStrides()[idx]);
       threadStrides.push_back(getThreadStrides()[idx]);
       indexToRankReducedIndexMap[idx] = count++;
     }
@@ -65,7 +67,7 @@ NestedLayoutAttr::project(ArrayRef<bool> droppedDims) const {
 
   return NestedLayoutAttr::get(getContext(), subgroupCount, batchCount,
                                outerCount, threadCount, elementCount,
-                               subgroupStrides, threadStrides);
+                               subgroupStrides, outerStrides, threadStrides);
 }
 
 VectorLayoutInterface NestedLayoutAttr::apply(AffineMap map) const {
@@ -78,6 +80,7 @@ VectorLayoutInterface NestedLayoutAttr::apply(AffineMap map) const {
   SmallVector<int64_t> threadCount(map.getNumResults(), 1);
   SmallVector<int64_t> elementCount(map.getNumResults(), 1);
   SmallVector<int64_t> subgroupStrides(map.getNumResults(), 0);
+  SmallVector<int64_t> outerStrides(map.getNumResults(), 0);
   SmallVector<int64_t> threadStrides(map.getNumResults(), 0);
 
   for (auto [idx, expr] : llvm::enumerate(map.getResults())) {
@@ -89,13 +92,14 @@ VectorLayoutInterface NestedLayoutAttr::apply(AffineMap map) const {
       threadCount[idx] = getThreadTile()[pos];
       elementCount[idx] = getElementTile()[pos];
       subgroupStrides[idx] = getSubgroupStrides()[pos];
+      outerStrides[idx] = getOuterStrides()[pos];
       threadStrides[idx] = getThreadStrides()[pos];
     }
   }
 
   return NestedLayoutAttr::get(getContext(), subgroupCount, batchCount,
                                outerCount, threadCount, elementCount,
-                               subgroupStrides, threadStrides);
+                               subgroupStrides, outerStrides, threadStrides);
 }
 
 VectorLayoutInterface
@@ -113,11 +117,13 @@ NestedLayoutAttr::permute(ArrayRef<int64_t> permutation) const {
       applyPermutation(getElementTile(), permutation);
   SmallVector<int64_t> subgroupStrides =
       applyPermutation(getSubgroupStrides(), permutation);
+  SmallVector<int64_t> outerStrides =
+      applyPermutation(getOuterStrides(), permutation);
   SmallVector<int64_t> threadStrides =
       applyPermutation(getThreadStrides(), permutation);
   return NestedLayoutAttr::get(getContext(), subgroupCount, batchCount,
                                outerCount, threadCount, elementCount,
-                               subgroupStrides, threadStrides);
+                               subgroupStrides, outerStrides, threadStrides);
 }
 
 /// We distribute to:
@@ -219,25 +225,28 @@ NestedLayoutAttr NestedLayoutAttr::getChecked(
     ArrayRef<int64_t> subgroupTile, ArrayRef<int64_t> batchTile,
     ArrayRef<int64_t> outerTile, ArrayRef<int64_t> threadTile,
     ArrayRef<int64_t> elementTile, ArrayRef<int64_t> subgroupStrides,
-    ArrayRef<int64_t> threadStrides) {
+    ArrayRef<int64_t> outerStrides, ArrayRef<int64_t> threadStrides) {
   if (failed(NestedLayoutAttr::verify(emitError, subgroupTile, batchTile,
                                       outerTile, threadTile, elementTile,
-                                      subgroupStrides, threadStrides))) {
+                                      subgroupStrides, outerStrides,
+                                      threadStrides))) {
     return NestedLayoutAttr();
   }
 
   return NestedLayoutAttr::get(context, subgroupTile, batchTile, outerTile,
                                threadTile, elementTile, subgroupStrides,
-                               threadStrides);
+                               outerStrides, threadStrides);
 }
 
 NestedLayoutAttr NestedLayoutAttr::get(
     MLIRContext *context, ArrayRef<int64_t> subgroupTile,
     ArrayRef<int64_t> batchTile, ArrayRef<int64_t> outerTile,
     ArrayRef<int64_t> threadTile, ArrayRef<int64_t> elementTile,
-    ArrayRef<int64_t> subgroupStrides, ArrayRef<int64_t> threadStrides) {
+    ArrayRef<int64_t> subgroupStrides, ArrayRef<int64_t> outerStrides,
+    ArrayRef<int64_t> threadStrides) {
 
   SmallVector<int64_t> normalizedSubgroupStrides(subgroupStrides);
+  SmallVector<int64_t> normalizedOuterStrides(outerStrides);
   SmallVector<int64_t> normalizedThreadStrides(threadStrides);
 
   // Dimension of size 1 only have one element to distribute, so stride can be
@@ -245,6 +254,13 @@ NestedLayoutAttr NestedLayoutAttr::get(
 
   for (auto [stride, size] :
        llvm::zip_equal(normalizedSubgroupStrides, subgroupTile)) {
+    if (size == 1) {
+      stride = 0;
+    }
+  }
+
+  for (auto [stride, size] :
+       llvm::zip_equal(normalizedOuterStrides, outerTile)) {
     if (size == 1) {
       stride = 0;
     }
@@ -259,7 +275,7 @@ NestedLayoutAttr NestedLayoutAttr::get(
 
   return Base::get(context, subgroupTile, batchTile, outerTile, threadTile,
                    elementTile, normalizedSubgroupStrides,
-                   normalizedThreadStrides);
+                   normalizedOuterStrides, normalizedThreadStrides);
 }
 
 static SmallVector<int64_t> appendDims(ArrayRef<int64_t> tileLens,
@@ -278,6 +294,7 @@ NestedLayoutAttr NestedLayoutAttr::get(MLIRContext *context,
                                        ArrayRef<int64_t> appendThreadLens,
                                        ArrayRef<int64_t> appendElementLens,
                                        ArrayRef<int64_t> appendSubgroupStrides,
+                                       ArrayRef<int64_t> appendOuterStrides,
                                        ArrayRef<int64_t> appendThreadStrides) {
   SmallVector<int64_t> subgroupTile =
       appendDims(source.getSubgroupTile(), appendSubGroupLens);
@@ -291,11 +308,13 @@ NestedLayoutAttr NestedLayoutAttr::get(MLIRContext *context,
       appendDims(source.getElementTile(), appendElementLens);
   SmallVector<int64_t> subgroupStrides =
       appendDims(source.getSubgroupStrides(), appendSubgroupStrides);
+  SmallVector<int64_t> outerStrides =
+      appendDims(source.getOuterStrides(), appendOuterStrides);
   SmallVector<int64_t> threadStrides =
       appendDims(source.getThreadStrides(), appendThreadStrides);
   return NestedLayoutAttr::get(context, subgroupTile, batchTile, outerTile,
                                threadTile, elementTile, subgroupStrides,
-                               threadStrides);
+                               outerStrides, threadStrides);
 }
 
 VectorLayoutInterface
@@ -321,6 +340,7 @@ NestedLayoutAttr::getRecombinedLayout(ArrayRef<VectorLayoutInterface> layouts,
   SmallVector<int64_t> threadTile(resRank, kInvalid);
   SmallVector<int64_t> elementTile(resRank, kInvalid);
   SmallVector<int64_t> subgroupStrides(resRank, kInvalid);
+  SmallVector<int64_t> outerStrides(resRank, kInvalid);
   SmallVector<int64_t> threadStrides(resRank, kInvalid);
 
   // a helper to perform a valid update when recombining
@@ -368,6 +388,10 @@ NestedLayoutAttr::getRecombinedLayout(ArrayRef<VectorLayoutInterface> layouts,
                          layout.getSubgroupStrides()[resultIdx])) {
         return NestedLayoutAttr();
       }
+      if (!checkedUpdate(outerStrides[resultPos],
+                         layout.getOuterStrides()[resultIdx])) {
+        return NestedLayoutAttr();
+      }
       if (!checkedUpdate(threadStrides[resultPos],
                          layout.getThreadStrides()[resultIdx])) {
         return NestedLayoutAttr();
@@ -379,7 +403,7 @@ NestedLayoutAttr::getRecombinedLayout(ArrayRef<VectorLayoutInterface> layouts,
   // after a successful recombination.
   for (const llvm::SmallVector<int64_t> &tile :
        {subgroupTile, batchTile, outerTile, threadTile, subgroupStrides,
-        threadStrides}) {
+        outerStrides, threadStrides}) {
     if (llvm::any_of(tile, [&](int64_t v) { return v == kInvalid; })) {
       return NestedLayoutAttr();
     }
@@ -387,7 +411,7 @@ NestedLayoutAttr::getRecombinedLayout(ArrayRef<VectorLayoutInterface> layouts,
 
   return NestedLayoutAttr::get(context, subgroupTile, batchTile, outerTile,
                                threadTile, elementTile, subgroupStrides,
-                               threadStrides);
+                               outerStrides, threadStrides);
 }
 
 LogicalResult NestedLayoutAttr::verify(
@@ -395,7 +419,7 @@ LogicalResult NestedLayoutAttr::verify(
     ArrayRef<int64_t> subgroupTile, ArrayRef<int64_t> batchTile,
     ArrayRef<int64_t> outerTile, ArrayRef<int64_t> threadTile,
     ArrayRef<int64_t> elementTile, ArrayRef<int64_t> subgroupStrides,
-    ArrayRef<int64_t> threadStrides) {
+    ArrayRef<int64_t> outerStrides, ArrayRef<int64_t> threadStrides) {
 
   size_t rank = subgroupTile.size();
   auto checkTile = [&](ArrayRef<int64_t> tileShape) {
@@ -409,7 +433,7 @@ LogicalResult NestedLayoutAttr::verify(
   if (failed(checkTile(subgroupTile)) || failed(checkTile(batchTile)) ||
       failed(checkTile(outerTile)) || failed(checkTile(threadTile)) ||
       failed(checkTile(elementTile)) || failed(checkTile(subgroupStrides)) ||
-      failed(checkTile(threadStrides))) {
+      failed(checkTile(outerStrides)) || failed(checkTile(threadStrides))) {
     return failure();
   }
 

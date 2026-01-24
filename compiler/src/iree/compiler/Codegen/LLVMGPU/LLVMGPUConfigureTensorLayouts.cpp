@@ -212,6 +212,7 @@ getContractionLayout(Operation *candidate, ArrayRef<int64_t> bounds,
     // concrete nested layout as the layout for the innermost M, N, K
     // dimensions.
     SmallVector<int64_t> outerCounts(rank, 1);
+    SmallVector<int64_t> outerStrides(rank, 0);
     SmallVector<int64_t> elementCounts(rank, 1);
     SmallVector<int64_t> threadCounts(rank, 1);
     SmallVector<int64_t> threadStrides(rank, 0);
@@ -220,6 +221,8 @@ getContractionLayout(Operation *candidate, ArrayRef<int64_t> bounds,
         IREE::GPU::getSingleSubgroupLayout(intrinsic, operandIndex);
     outerCounts[outerDim] = subgroupLayout.outer[0];
     outerCounts[innerDim] = subgroupLayout.outer[1];
+    outerStrides[outerDim] = subgroupLayout.ostrides[0];
+    outerStrides[innerDim] = subgroupLayout.ostrides[1];
     threadCounts[outerDim] = subgroupLayout.thread[0];
     threadCounts[innerDim] = subgroupLayout.thread[1];
     threadStrides[outerDim] = subgroupLayout.tstrides[0];
@@ -231,7 +234,8 @@ getContractionLayout(Operation *candidate, ArrayRef<int64_t> bounds,
     // fragment itself.
     auto fragmentSpaceLayout = NestedLayoutAttr::get(
         map.getContext(), subgroupCounts, batchCounts, outerCounts,
-        threadCounts, elementCounts, subgroupStrides, threadStrides);
+        threadCounts, elementCounts, subgroupStrides, outerStrides,
+        threadStrides);
     return fragmentSpaceLayout.apply(map);
   };
 
@@ -580,11 +584,12 @@ static LogicalResult setDerivedThreadConfigLayout(
   SmallVector<int64_t> subgroupTile(opRank, 1);
   SmallVector<int64_t> subgroupStrides(opRank, 0);
   SmallVector<int64_t> outerTile(opRank, 1);
+  SmallVector<int64_t> outerStrides(opRank, 0);
 
   MLIRContext *context = rewriter.getContext();
   auto layout = IREE::VectorExt::NestedLayoutAttr::get(
       context, subgroupTile, opShape, outerTile, threadTile, elementTile,
-      subgroupStrides, threadStrides);
+      subgroupStrides, outerStrides, threadStrides);
 
   Location loc = linalgOp.getLoc();
 
@@ -663,10 +668,11 @@ static LogicalResult setGPULoweringConfigLayout(
   // property, we choose to compute it.
   ArrayRef<int64_t> batchTile = bounds;
   SmallVector<int64_t> outerTile(bounds.size(), 1);
+  SmallVector<int64_t> outerStrides(bounds.size(), 0);
 
   auto layout = IREE::VectorExt::NestedLayoutAttr::get(
       context, subgroupSizes, batchTile, outerTile, threadSizes,
-      elementTile.value(), subgroupStrides, threadStrides);
+      elementTile.value(), subgroupStrides, outerStrides, threadStrides);
 
   SmallVector<bool> promotedOperands = getPromotedOperands(candidate);
 

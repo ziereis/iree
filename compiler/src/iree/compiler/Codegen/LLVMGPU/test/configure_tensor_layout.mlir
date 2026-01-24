@@ -35,9 +35,9 @@ func.func @matmul_96x64x16_mfma(%lhs: tensor<96x16xf16>,
   return %out : tensor<96x64xf32>
 }
 
-// CHECK-DAG: #[[$NESTED:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [3, 2], outer_tile = [1, 1], thread_tile = [32, 2], element_tile = [1, 4], subgroup_strides = [0, 0], thread_strides = [1, 32]>
-// CHECK-DAG: #[[$NESTED1:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [2, 2], outer_tile = [1, 1], thread_tile = [32, 2], element_tile = [1, 4], subgroup_strides = [0, 0], thread_strides = [1, 32]>
-// CHECK-DAG: #[[$NESTED2:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [3, 2], outer_tile = [4, 1], thread_tile = [2, 32], element_tile = [4, 1], subgroup_strides = [0, 0], thread_strides = [32, 1]>
+// CHECK-DAG: #[[$NESTED:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [3, 2], outer_tile = [1, 1], thread_tile = [32, 2], element_tile = [1, 4], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 32]>
+// CHECK-DAG: #[[$NESTED1:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [2, 2], outer_tile = [1, 1], thread_tile = [32, 2], element_tile = [1, 4], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 32]>
+// CHECK-DAG: #[[$NESTED2:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [3, 2], outer_tile = [4, 1], thread_tile = [2, 32], element_tile = [4, 1], subgroup_strides = [0, 0], outer_strides = [1, 0], thread_strides = [32, 1]>
 
 // CHECK-LABEL: func.func @matmul_96x64x16_mfma
 
@@ -85,9 +85,9 @@ func.func @matmul_96x64x16_wmmar3(%lhs: tensor<96x16xf16>,
   return %out : tensor<96x64xf32>
 }
 
-// CHECK-DAG: #[[$NESTED:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 1], outer_tile = [1, 1], thread_tile = [16, 1], element_tile = [1, 16], subgroup_strides = [0, 0], thread_strides = [1, 0]>
-// CHECK-DAG: #[[$NESTED1:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [4, 1], outer_tile = [1, 1], thread_tile = [16, 1], element_tile = [1, 16], subgroup_strides = [0, 0], thread_strides = [1, 0]>
-// CHECK-DAG: #[[$NESTED2:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 4], outer_tile = [8, 1], thread_tile = [2, 16], element_tile = [1, 1], subgroup_strides = [0, 0], thread_strides = [16, 1]>
+// CHECK-DAG: #[[$NESTED:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 1], outer_tile = [1, 1], thread_tile = [16, 1], element_tile = [1, 16], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 0]>
+// CHECK-DAG: #[[$NESTED1:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [4, 1], outer_tile = [1, 1], thread_tile = [16, 1], element_tile = [1, 16], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 0]>
+// CHECK-DAG: #[[$NESTED2:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 4], outer_tile = [8, 1], thread_tile = [2, 16], element_tile = [1, 1], subgroup_strides = [0, 0], outer_strides = [1, 0], thread_strides = [16, 1]>
 
 // CHECK-LABEL: func.func @matmul_96x64x16_wmmar3
 
@@ -135,9 +135,9 @@ func.func @matmul_96x64x16_wmmar4(%lhs: tensor<96x16xf16>,
   return %out : tensor<96x64xf32>
 }
 
-// CHECK-DAG: #[[$NESTED:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 1], outer_tile = [1, 1], thread_tile = [16, 2], element_tile = [1, 8], subgroup_strides = [0, 0], thread_strides = [1, 16]>
-// CHECK-DAG: #[[$NESTED1:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [4, 1], outer_tile = [1, 1], thread_tile = [16, 2], element_tile = [1, 8], subgroup_strides = [0, 0], thread_strides = [1, 16]>
-// CHECK-DAG: #[[$NESTED2:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 4], outer_tile = [1, 1], thread_tile = [2, 16], element_tile = [8, 1], subgroup_strides = [0, 0], thread_strides = [16, 1]>
+// CHECK-DAG: #[[$NESTED:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 1], outer_tile = [1, 1], thread_tile = [16, 2], element_tile = [1, 8], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 16]>
+// CHECK-DAG: #[[$NESTED1:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [4, 1], outer_tile = [1, 1], thread_tile = [16, 2], element_tile = [1, 8], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 16]>
+// CHECK-DAG: #[[$NESTED2:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 4], outer_tile = [1, 1], thread_tile = [2, 16], element_tile = [8, 1], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [16, 1]>
 
 // CHECK-LABEL: func.func @matmul_96x64x16_wmmar4
 
@@ -184,9 +184,9 @@ func.func @matmul_96x64x32_wmma_gfx1250(%lhs: tensor<96x32xf16>,
   return %out : tensor<96x64xf32>
 }
 
-// CHECK-DAG: #[[$NESTED:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 1], outer_tile = [1, 1], thread_tile = [16, 2], element_tile = [1, 16], subgroup_strides = [0, 0], thread_strides = [1, 16]>
-// CHECK-DAG: #[[$NESTED1:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [4, 1], outer_tile = [1, 1], thread_tile = [16, 2], element_tile = [1, 16], subgroup_strides = [0, 0], thread_strides = [1, 16]>
-// CHECK-DAG: #[[$NESTED2:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 4], outer_tile = [1, 1], thread_tile = [2, 16], element_tile = [8, 1], subgroup_strides = [0, 0], thread_strides = [16, 1]>
+// CHECK-DAG: #[[$NESTED:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 1], outer_tile = [1, 1], thread_tile = [16, 2], element_tile = [1, 16], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 16]>
+// CHECK-DAG: #[[$NESTED1:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [4, 1], outer_tile = [1, 1], thread_tile = [16, 2], element_tile = [1, 16], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [1, 16]>
+// CHECK-DAG: #[[$NESTED2:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [6, 4], outer_tile = [1, 1], thread_tile = [2, 16], element_tile = [8, 1], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [16, 1]>
 
 // CHECK-LABEL: func.func @matmul_96x64x32_wmma_gfx1250
 
@@ -263,7 +263,7 @@ func.func @linalg_copy(%in : tensor<16x16x16xf16>) -> tensor<16x16x16xf16>
   func.return %copied : tensor<16x16x16xf16>
 }
 
-// CHECK-DAG: #[[$LAYOUT:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1, 1], batch_tile = [8, 1, 1], outer_tile = [1, 1, 1], thread_tile = [2, 16, 2], element_tile = [1, 1, 8], subgroup_strides = [0, 0, 0], thread_strides = [32, 2, 1]>
+// CHECK-DAG: #[[$LAYOUT:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1, 1], batch_tile = [8, 1, 1], outer_tile = [1, 1, 1], thread_tile = [2, 16, 2], element_tile = [1, 1, 8], subgroup_strides = [0, 0, 0], outer_strides = [0, 0, 0], thread_strides = [32, 2, 1]>
 
 // CHECK-LABEL: func.func @linalg_copy
 // CHECK: %[[OUT:.+]] = linalg.copy
@@ -306,7 +306,7 @@ func.func @gather_like(%base : tensor<16384x16x32x128xf16>,
   func.return %gather : tensor<4x64x4x16x32x128xf16>
 }
 
-// CHECK-DAG: #[[$LAYOUT:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1, 1, 1, 1, 1], batch_tile = [4, 64, 4, 16, 8, 1], outer_tile = [1, 1, 1, 1, 1, 1], thread_tile = [1, 1, 1, 1, 4, 16], element_tile = [1, 1, 1, 1, 1, 8], subgroup_strides = [0, 0, 0, 0, 0, 0], thread_strides = [0, 0, 0, 0, 16, 1]>
+// CHECK-DAG: #[[$LAYOUT:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1, 1, 1, 1, 1], batch_tile = [4, 64, 4, 16, 8, 1], outer_tile = [1, 1, 1, 1, 1, 1], thread_tile = [1, 1, 1, 1, 4, 16], element_tile = [1, 1, 1, 1, 1, 8], subgroup_strides = [0, 0, 0, 0, 0, 0], outer_strides = [0, 0, 0, 0, 0, 0], thread_strides = [0, 0, 0, 0, 16, 1]>
 
 // CHECK-LABEL: func.func @gather_like
 // CHECK: %[[OUT:.+]] = linalg.generic
@@ -329,7 +329,7 @@ func.func @dynamic_infer_sizes(%in : tensor<4x32x?x128xf16>) -> tensor<1x1x?x128
   return %50 : tensor<1x1x?x128xf16>
 }
 
-// CHECK-DAG: #[[LAYOUT:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1, 1, 1], batch_tile = [1, 1, 256, 1], outer_tile = [1, 1, 1, 1], thread_tile = [1, 1, 4, 16], element_tile = [1, 1, 1, 8], subgroup_strides = [0, 0, 0, 0], thread_strides = [0, 0, 16, 1]>
+// CHECK-DAG: #[[LAYOUT:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1, 1, 1], batch_tile = [1, 1, 256, 1], outer_tile = [1, 1, 1, 1], thread_tile = [1, 1, 4, 16], element_tile = [1, 1, 1, 8], subgroup_strides = [0, 0, 0, 0], outer_strides = [0, 0, 0, 0], thread_strides = [0, 0, 16, 1]>
 
 // CHECK: %[[EXTRACT:.+]] = tensor.extract_slice %arg0{{.*}} : tensor<4x32x?x128xf16> to tensor<1x1x?x128xf16>
 // CHECK: %[[EMPTY:.+]] = tensor.empty({{.*}}) : tensor<1x1x?x128xf16>
@@ -359,7 +359,7 @@ func.func @dynamic_infer_sizes_lowering_config(%in : tensor<4x32x?x128xf16>) -> 
   return %50 : tensor<1x1x?x128xf16>
 }
 
-// CHECK-DAG: #[[LAYOUT:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1, 2, 2], batch_tile = [1, 1, 1, 1], outer_tile = [1, 1, 1, 1], thread_tile = [1, 1, 8, 8], element_tile = [1, 1, 8, 8], subgroup_strides = [0, 0, 2, 1], thread_strides = [0, 0, 8, 1]>
+// CHECK-DAG: #[[LAYOUT:.+]] = #iree_vector_ext.nested_layout<subgroup_tile = [1, 1, 2, 2], batch_tile = [1, 1, 1, 1], outer_tile = [1, 1, 1, 1], thread_tile = [1, 1, 8, 8], element_tile = [1, 1, 8, 8], subgroup_strides = [0, 0, 2, 1], outer_strides = [0, 0, 0, 0], thread_strides = [0, 0, 8, 1]>
 
 // CHECK: %[[EXTRACT:.+]] = tensor.extract_slice %arg0{{.*}} : tensor<4x32x?x128xf16> to tensor<1x1x?x128xf16>
 // CHECK: %[[EMPTY:.+]] = tensor.empty({{.*}}) : tensor<1x1x?x128xf16>

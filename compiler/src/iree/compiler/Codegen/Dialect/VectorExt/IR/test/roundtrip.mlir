@@ -5,7 +5,7 @@ func.func @specify_inline_layout(%lhs: memref<32x32xf16>) -> vector<32x32xf16> {
   %cst_0 = arith.constant 0.0 : f16
   %c0 = arith.constant 0 : index
   %result = vector.transfer_read %lhs[%c0, %c0], %cst_0 {in_bounds = [true, true]} : memref<32x32xf16>, vector<32x32xf16>
-  %2 = iree_vector_ext.to_layout %result to layout(#iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [2, 4], outer_tile = [4, 1], thread_tile = [4, 2], element_tile = [1, 4], subgroup_strides = [0, 0], thread_strides = [1, 4]>) : vector<32x32xf16>
+  %2 = iree_vector_ext.to_layout %result to layout(#iree_vector_ext.nested_layout<subgroup_tile = [1, 1], batch_tile = [2, 4], outer_tile = [4, 1], thread_tile = [4, 2], element_tile = [1, 4], subgroup_strides = [0, 0], outer_strides = [1, 0], thread_strides = [1, 4]>) : vector<32x32xf16>
   return %2 : vector<32x32xf16>
 }
 
@@ -22,6 +22,7 @@ func.func @specify_inline_layout(%lhs: memref<32x32xf16>) -> vector<32x32xf16> {
   element_tile = [1, 4],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [1, 0],
   thread_strides   = [1, 4]
 >
 
@@ -33,6 +34,7 @@ func.func @specify_inline_layout(%lhs: memref<32x32xf16>) -> vector<32x32xf16> {
   element_tile = [4, 1],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 1],
   thread_strides = [8, 2]
 >
 
@@ -54,6 +56,7 @@ func.func @specify_nested(%lhs: memref<32x32xf16>) -> vector<32x32xf16> {
 // CHECK-SAME: thread_tile = [4, 2],
 // CHECK-SAME: element_tile = [1, 4],
 // CHECK-SAME: subgroup_strides = [0, 0],
+// CHECK-SAME: outer_strides = [1, 0],
 // CHECK-SAME: thread_strides = [1, 4]>
 
 // CHECK: #[[$LAYOUT1:.+]] = #iree_vector_ext.nested_layout<
@@ -63,6 +66,7 @@ func.func @specify_nested(%lhs: memref<32x32xf16>) -> vector<32x32xf16> {
 // CHECK-SAME: thread_tile = [2, 4],
 // CHECK-SAME: element_tile = [4, 1],
 // CHECK-SAME: subgroup_strides = [0, 0],
+// CHECK-SAME: outer_strides = [0, 1],
 // CHECK-SAME: thread_strides = [8, 2]>
 
 // CHECK-LABEL: func.func @specify_nested
@@ -80,6 +84,7 @@ func.func @specify_nested(%lhs: memref<32x32xf16>) -> vector<32x32xf16> {
   element_tile = [],
 
   subgroup_strides = [],
+  outer_strides    = [],
   thread_strides   = []
 >
 
@@ -95,6 +100,7 @@ func.func @specify_nested_0d(%lhs: vector<f16>) -> vector<f16> {
 // CHECK-SAME: thread_tile = [],
 // CHECK-SAME: element_tile = [],
 // CHECK-SAME: subgroup_strides = [],
+// CHECK-SAME: outer_strides = [],
 // CHECK-SAME: thread_strides = []>
 
 // CHECK-LABEL: func.func @specify_nested_0d

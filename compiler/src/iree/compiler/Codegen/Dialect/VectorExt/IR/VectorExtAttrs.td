@@ -202,6 +202,7 @@ def NestedLayoutAttr : IREEVectorExt_Attr<"NestedLayout",
     OptionalArrayRefParameter<"int64_t", "element_tile">:$elementTile,
 
     OptionalArrayRefParameter<"int64_t", "subgroup_strides">:$subgroupStrides,
+    OptionalArrayRefParameter<"int64_t", "outer_strides">:$outerStrides,
     OptionalArrayRefParameter<"int64_t", "thread_strides">:$threadStrides
   );
 
@@ -212,6 +213,7 @@ def NestedLayoutAttr : IREEVectorExt_Attr<"NestedLayout",
         `thread_tile`       `=` `[` (`]`) : ($threadTile^ `]`)? `,`
         `element_tile`      `=` `[` (`]`) : ($elementTile^ `]`)? `,`
         `subgroup_strides`  `=` `[` (`]`) : ($subgroupStrides^ `]`)? `,`
+        `outer_strides`     `=` `[` (`]`) : ($outerStrides^ `]`)? `,`
         `thread_strides`    `=` `[` (`]`) : ($threadStrides^ `]`)?
     `>`
   }];
@@ -224,6 +226,7 @@ def NestedLayoutAttr : IREEVectorExt_Attr<"NestedLayout",
                      "ArrayRef<int64_t>":$threadTile,
                      "ArrayRef<int64_t>":$elementTile,
                      "ArrayRef<int64_t>":$subgroupStrides,
+                     "ArrayRef<int64_t>":$outerStrides,
                      "ArrayRef<int64_t>":$threadStrides)>,
     AttrBuilder<(ins "NestedLayoutAttr":$source,
                      "ArrayRef<int64_t>":$appendSubGroupLens,
@@ -232,6 +235,7 @@ def NestedLayoutAttr : IREEVectorExt_Attr<"NestedLayout",
                      "ArrayRef<int64_t>":$appendThreadLens,
                      "ArrayRef<int64_t>":$appendElementLens,
                      "ArrayRef<int64_t>":$appendSubgroupStrides,
+                     "ArrayRef<int64_t>":$appendOuterStrides,
                      "ArrayRef<int64_t>":$appendThreadStrides)>
   ];
 

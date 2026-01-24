@@ -53,11 +53,9 @@ hal.executable public @main {
 //       CHECK:       vector.transfer_read {{.*}} vector<{{.*}}xf16>
 //       CHECK:       vector.transfer_write
 //       CHECK:       gpu.barrier
-// Verify LHS transpose for mma.sync column-major ordering
-// TileAndFuse produces 2x1x2x2 -> reshape to 2x2x2 -> transpose [1,0,2] -> reshape to 4x2
-//       CHECK:       vector.shape_cast {{.*}} : vector<2x1x2x2xf16> to vector<2x2x2xf16>
-//       CHECK:       vector.transpose {{.*}}, [1, 0, 2] : vector<2x2x2xf16> to vector<2x2x2xf16>
-//       CHECK:       vector.shape_cast {{.*}} : vector<2x2x2xf16> to vector<4x2xf16>
+// LHS column-major ordering is now handled directly by outerStrides in distribution patterns.
+// The shape_cast to 4x2 and nvgpu.mma.sync should appear without an explicit transpose.
+//       CHECK:       vector.shape_cast {{.*}} : vector<{{.*}}xf16> to vector<4x2xf16>
 // Verify nvgpu.mma.sync is generated with correct shape
 // CHECK-COUNT-8: nvgpu.mma.sync({{.*}}) {mmaShape = [16, 8, 16]}
 //       CHECK:   scf.yield
@@ -105,9 +103,8 @@ hal.executable public @main_f16 {
 }
 
 // CHECK-LABEL: func @matmul_tile_and_fuse_mma_sync_f16
-// Verify LHS transpose for mma.sync column-major ordering (same pattern as f32)
-//       CHECK:       vector.shape_cast {{.*}} : vector<2x1x2x2xf16> to vector<2x2x2xf16>
-//       CHECK:       vector.transpose {{.*}}, [1, 0, 2] : vector<2x2x2xf16> to vector<2x2x2xf16>
-//       CHECK:       vector.shape_cast {{.*}} : vector<2x2x2xf16> to vector<4x2xf16>
+// LHS column-major ordering is now handled directly by outerStrides in distribution patterns.
+// The shape_cast to 4x2 and nvgpu.mma.sync should appear without an explicit transpose.
+//       CHECK:       vector.shape_cast {{.*}} : vector<{{.*}}xf16> to vector<4x2xf16>
 // Verify nvgpu.mma.sync is generated with f16 output type
 // CHECK-COUNT-8: nvgpu.mma.sync({{.*}}) {mmaShape = [16, 8, 16]} : ({{.*}}) -> vector<2x2xf16>

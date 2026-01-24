@@ -234,31 +234,31 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
   auto mfmaLhs16xK = [](int64_t k) -> MMASingleSubgroupLayout {
     assert(k % 4 == 0 && "doesn't support blocked MFMAs");
     return {/*outer=*/{1, 1}, /*thread=*/{16, 4}, /*tstrides=*/{1, 16},
-            /*element=*/{1, k / 4}};
+            /*ostrides=*/{1, 1}, /*element=*/{1, k / 4}};
   };
   auto mfmaRhsKx16 = [](int64_t k) -> MMASingleSubgroupLayout {
     assert(k % 4 == 0 && "doesn't support blocked MFMAs");
     return {/*outer=*/{1, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
-            /*element=*/{k / 4, 1}};
+            /*ostrides=*/{1, 1}, /*element=*/{k / 4, 1}};
   };
 
   auto mfmaLhs32xK = [](int64_t k) -> MMASingleSubgroupLayout {
     assert(k % 2 == 0 && "doesn't support blocked MFMAs");
     return {/*outer=*/{1, 1}, /*thread=*/{32, 2}, /*tstrides=*/{1, 32},
-            /*element=*/{1, k / 2}};
+            /*ostrides=*/{1, 1}, /*element=*/{1, k / 2}};
   };
   auto mfmaRhsKx32 = [](int64_t k) -> MMASingleSubgroupLayout {
     assert(k % 2 == 0 && "doesn't support blocked MFMAs");
     return {/*outer=*/{1, 1}, /*thread=*/{2, 32}, /*tstrides=*/{32, 1},
-            /*element=*/{k / 2, 1}};
+            /*ostrides=*/{1, 1}, /*element=*/{k / 2, 1}};
   };
 
   const MMASingleSubgroupLayout mfmaAcc16x16 = {
       /*outer=*/{1, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
-      /*element=*/{4, 1}};
+      /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
   const MMASingleSubgroupLayout mfmaAcc32x32 = {
       /*outer=*/{4, 1}, /*thread=*/{2, 32}, /*tstrides=*/{32, 1},
-      /*element=*/{4, 1}};
+      /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
 
   // Note: For gfx12, we specify here that, for example with K=16, lane 0 takes
   // A[0, 0..7] and that lane 16 takes A[0, 8..15]. The hardware will internally
@@ -269,11 +269,11 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
   // the manual doesn't *technically* match the below.
   auto gfx12Wmma16xK = [](int64_t k) -> MMASingleSubgroupLayout {
     return {/*outer=*/{1, 1}, /*thread=*/{16, 2}, /*tstrides=*/{1, 16},
-            /*element=*/{1, k / 2}};
+            /*ostrides=*/{1, 1}, /*element=*/{1, k / 2}};
   };
   auto gfx12WmmaKx16 = [](int64_t k) -> MMASingleSubgroupLayout {
     return {/*outer=*/{1, 1}, /*thread=*/{2, 16}, /*tstrides=*/{16, 1},
-            /*element=*/{k / 2, 1}};
+            /*ostrides=*/{1, 1}, /*element=*/{k / 2, 1}};
   };
   const MMASingleSubgroupLayout gfx12WmmaAcc16x16 = gfx12WmmaKx16(16);
 
@@ -296,7 +296,7 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
       return mfmaRhsKx16(4);
     case kMMAOperandAcc:
       return {/*outer=*/{4, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
-              /*element=*/{1, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 1}};
     }
   case MMAIntrinsic::MFMA_F32_16x16x8_BF16: {
     switch (operandIndex) {
@@ -425,27 +425,27 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
   case MMAIntrinsic::WMMAR3_I32_16x16x16_I8:
     switch (operandIndex) {
     case kMMAOperandLhs:
-      return {/*outer=*/{1, 1}, /*thread=*/{16, 1}, /*strides=*/{1, 0},
-              /*element=*/{1, 16}};
+      return {/*outer=*/{1, 1}, /*thread=*/{16, 1}, /*tstrides=*/{1, 0},
+              /*ostrides=*/{1, 1}, /*element=*/{1, 16}};
     case kMMAOperandRhs:
       return {/*outer=*/{1, 1}, /*thread=*/{1, 16}, /*tstrides=*/{0, 1},
-              /*element=*/{16, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{16, 1}};
     case kMMAOperandAcc:
       return {/*outer=*/{8, 1}, /*thread=*/{2, 16}, /*tstrides=*/{16, 1},
-              /*element=*/{1, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 1}};
     }
   case MMAIntrinsic::WMMAR3_F16_16x16x16_F16:
   case MMAIntrinsic::WMMAR3_BF16_16x16x16_BF16:
     switch (operandIndex) {
     case kMMAOperandLhs:
-      return {/*outer=*/{1, 1}, /*thread=*/{16, 1}, /*strides=*/{1, 0},
-              /*element=*/{1, 16}};
+      return {/*outer=*/{1, 1}, /*thread=*/{16, 1}, /*tstrides=*/{1, 0},
+              /*ostrides=*/{1, 1}, /*element=*/{1, 16}};
     case kMMAOperandRhs:
       return {/*outer=*/{1, 1}, /*thread=*/{1, 16}, /*tstrides=*/{0, 1},
-              /*element=*/{16, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{16, 1}};
     case kMMAOperandAcc:
       return {/*outer=*/{16, 1}, /*thread=*/{1, 16}, /*tstrides=*/{0, 1},
-              /*element=*/{1, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 1}};
     }
   case MMAIntrinsic::WMMAR4_F32_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F32_16x16x16_BF16:
@@ -522,14 +522,15 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
   case MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16:
     switch (operandIndex) {
     case kMMAOperandLhs:
-      return {/*outer=*/{2, 2}, /*thread=*/{8, 4}, /*strides=*/{4, 1},
-              /*element=*/{1, 2}};
+      // Column-major outer ordering: dim0 (M) is stride-1, dim1 (K) is stride-2
+      return {/*outer=*/{2, 2}, /*thread=*/{8, 4}, /*tstrides=*/{4, 1},
+              /*ostrides=*/{1, 2}, /*element=*/{1, 2}};
     case kMMAOperandRhs:
-      return {/*outer=*/{2, 1}, /*thread=*/{4, 8}, /*strides=*/{1, 4},
-              /*element=*/{2, 1}};
+      return {/*outer=*/{2, 1}, /*thread=*/{4, 8}, /*tstrides=*/{1, 4},
+              /*ostrides=*/{1, 1}, /*element=*/{2, 1}};
     case kMMAOperandAcc:
-      return {/*outer=*/{2, 1}, /*thread=*/{8, 4}, /*strides=*/{4, 1},
-              /*element=*/{1, 2}};
+      return {/*outer=*/{2, 1}, /*thread=*/{8, 4}, /*tstrides=*/{4, 1},
+              /*ostrides=*/{1, 1}, /*element=*/{1, 2}};
     }
     return {};
   case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
@@ -551,6 +552,7 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
     std::swap(baseLayout.thread[0], baseLayout.thread[1]);
     std::swap(baseLayout.outer[0], baseLayout.outer[1]);
     std::swap(baseLayout.tstrides[0], baseLayout.tstrides[1]);
+    std::swap(baseLayout.ostrides[0], baseLayout.ostrides[1]);
   }
   return baseLayout;
 }
@@ -566,6 +568,7 @@ getSingleSubgroupLayout(VirtualMMAIntrinsic virtualIntrinsic, int operandIndex,
     std::swap(baseLayout.thread[0], baseLayout.thread[1]);
     std::swap(baseLayout.outer[0], baseLayout.outer[1]);
     std::swap(baseLayout.tstrides[0], baseLayout.tstrides[1]);
+    std::swap(baseLayout.ostrides[0], baseLayout.ostrides[1]);
   }
   return baseLayout;
 }
@@ -781,17 +784,11 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
   }
   if (intrinsic == MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16 ||
       intrinsic == MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16) {
-    // Transpose the two outer dimensions to model the column-major register
-    // ordering expected by mma.sync. The input shape differs between pipelines:
-    // VectorDistribute produces 2x2x1x2, TileAndFuse produces 2x1x2x2.
-    // Remove the unit dimension to simplify the transpose.
-    auto nonUnitVecType = VectorType::get({2, 2, 2}, builder.getF16Type());
-    auto reshaped =
-        vector::ShapeCastOp::create(builder, loc, nonUnitVecType, lhs);
-    auto permAttr = builder.getDenseI64ArrayAttr({1, 0, 2});
-    auto transposed = vector::TransposeOp::create(builder, loc, nonUnitVecType,
-                                                  reshaped, permAttr);
-    lhs = vector::ShapeCastOp::create(builder, loc, lhs.getType(), transposed);
+    // The LHS operand has column-major outer ordering (ostrides={1,2}),
+    // which is expressed in MMASingleSubgroupLayout and propagated through
+    // outerStrides in NestedLayoutAttr. The distribution patterns use
+    // outerStrides via permuteOffsetsForOuterStrides to ensure correct
+    // register ordering for mma.sync intrinsics.
     SmallVector<Attribute> mmaShape{builder.getI64IntegerAttr(layout.mSize),
                                     builder.getI64IntegerAttr(layout.nSize),
                                     builder.getI64IntegerAttr(layout.kSize)};
@@ -1391,49 +1388,49 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(VirtualMMAIntrinsic intrinsic,
     switch (operandIndex) {
     case kMMAOperandLhs:
       return {/*outer=*/{1, 1}, /*thread=*/{16, 4}, /*tstrides=*/{1, 16},
-              /*element=*/{1, 8}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 8}};
     case kMMAOperandRhs:
       return {/*outer=*/{1, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
-              /*element=*/{8, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{8, 1}};
     case kMMAOperandAcc:
       return {/*outer=*/{1, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
-              /*element=*/{4, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
     }
   case VirtualMMAIntrinsic::VMFMA_F32_16x16x32_F8E4M3FNUZ:
     switch (operandIndex) {
     case kMMAOperandLhs:
       return {/*outer=*/{1, 2}, /*thread=*/{16, 4}, /*tstrides=*/{1, 16},
-              /*element=*/{1, 4}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 4}};
     case kMMAOperandRhs:
       return {/*outer=*/{2, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
-              /*element=*/{4, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
     case kMMAOperandAcc:
       return {/*outer=*/{1, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
-              /*element=*/{4, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
     }
   case VirtualMMAIntrinsic::VMFMA_F32_32x32x16_F16:
     switch (operandIndex) {
     case kMMAOperandLhs:
       return {/*outer=*/{1, 1}, /*thread=*/{32, 2}, /*tstrides=*/{1, 32},
-              /*element=*/{1, 8}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 8}};
     case kMMAOperandRhs:
       return {/*outer=*/{1, 1}, /*thread=*/{2, 32}, /*tstrides=*/{32, 1},
-              /*element=*/{8, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{8, 1}};
     case kMMAOperandAcc:
       return {/*outer=*/{4, 1}, /*thread=*/{2, 32}, /*tstrides=*/{32, 1},
-              /*element=*/{4, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
     }
   case VirtualMMAIntrinsic::VMFMA_F32_32x32x16_F8E4M3FNUZ:
     switch (operandIndex) {
     case kMMAOperandLhs:
       return {/*outer=*/{1, 2}, /*thread=*/{32, 2}, /*tstrides=*/{1, 32},
-              /*element=*/{1, 4}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 4}};
     case kMMAOperandRhs:
       return {/*outer=*/{2, 1}, /*thread=*/{2, 32}, /*tstrides=*/{32, 1},
-              /*element=*/{4, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
     case kMMAOperandAcc:
       return {/*outer=*/{4, 1}, /*thread=*/{2, 32}, /*tstrides=*/{32, 1},
-              /*element=*/{4, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
     }
   }
   assert(false && "unhandled virtual mma layout type.");
@@ -1452,28 +1449,28 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(ScaledMMAIntrinsic intrinsic,
                                                 int64_t operandIndex) {
   const MMASingleSubgroupLayout mfmaAcc16x16 = {
       /*outer=*/{1, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
-      /*element=*/{4, 1}};
+      /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
   const MMASingleSubgroupLayout mfmaAcc32x32 = {
       /*outer=*/{4, 1}, /*thread=*/{2, 32}, /*tstrides=*/{32, 1},
-      /*element=*/{4, 1}};
+      /*ostrides=*/{1, 1}, /*element=*/{4, 1}};
 
   switch (intrinsic) {
   case ScaledMMAIntrinsic::MFMA_SCALE_F32_16x16x128_B32:
     switch (operandIndex) {
     case kScaledMMAOperandLhs:
       return {/*outer=*/{1, 1, 1}, /*thread=*/{16, 4, 1},
-              /*tstrides=*/{1, 16, 1},
+              /*tstrides=*/{1, 16, 1}, /*ostrides=*/{1, 1, 1},
               /*element=*/{1, 1, 32}};
     case kScaledMMAOperandRhs:
       return {/*outer=*/{1, 1, 1}, /*thread=*/{4, 1, 16},
-              /*tstrides=*/{16, 1, 1},
+              /*tstrides=*/{16, 1, 1}, /*ostrides=*/{1, 1, 1},
               /*element=*/{1, 32, 1}};
     case kScaledMMAOperandLhsScale:
       return {/*outer=*/{1, 1}, /*thread=*/{16, 4}, /*tstrides=*/{1, 16},
-              /*element=*/{1, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 1}};
     case kScaledMMAOperandRhsScale:
       return {/*outer=*/{1, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
-              /*element=*/{1, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 1}};
     case kScaledMMAOperandAcc:
       return mfmaAcc16x16;
     }
@@ -1481,18 +1478,18 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(ScaledMMAIntrinsic intrinsic,
     switch (operandIndex) {
     case kScaledMMAOperandLhs:
       return {/*outer=*/{1, 1, 1}, /*thread=*/{32, 2, 1},
-              /*tstrides=*/{1, 32, 1},
+              /*tstrides=*/{1, 32, 1}, /*ostrides=*/{1, 1, 1},
               /*element=*/{1, 1, 32}};
     case kScaledMMAOperandRhs:
       return {/*outer=*/{1, 1, 1}, /*thread=*/{2, 1, 32},
-              /*tstrides=*/{32, 1, 1},
+              /*tstrides=*/{32, 1, 1}, /*ostrides=*/{1, 1, 1},
               /*element=*/{1, 32, 1}};
     case kScaledMMAOperandLhsScale:
       return {/*outer=*/{1, 1}, /*thread=*/{32, 2}, /*tstrides=*/{1, 32},
-              /*element=*/{1, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 1}};
     case kScaledMMAOperandRhsScale:
       return {/*outer=*/{1, 1}, /*thread=*/{2, 32}, /*tstrides=*/{32, 1},
-              /*element=*/{1, 1}};
+              /*ostrides=*/{1, 1}, /*element=*/{1, 1}};
     case kScaledMMAOperandAcc:
       return mfmaAcc32x32;
     }
@@ -1521,6 +1518,7 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(ScaledMMAIntrinsic intrinsic,
     std::swap(baseLayout.outer[0], baseLayout.outer[1]);
     std::swap(baseLayout.thread[0], baseLayout.thread[1]);
     std::swap(baseLayout.tstrides[0], baseLayout.tstrides[1]);
+    std::swap(baseLayout.ostrides[0], baseLayout.ostrides[1]);
     std::swap(baseLayout.element[0], baseLayout.element[1]);
   }
   return baseLayout;

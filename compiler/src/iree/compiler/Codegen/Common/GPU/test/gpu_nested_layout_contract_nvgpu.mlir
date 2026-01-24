@@ -19,6 +19,7 @@
   element_tile  = [1, 2],
 
   subgroup_strides = [1, 1],
+  outer_strides    = [1, 2],
   thread_strides   = [4, 1]
 >
 
@@ -31,6 +32,7 @@
   element_tile  = [2, 1],
 
   subgroup_strides = [1, 1],
+  outer_strides    = [0, 0],
   thread_strides   = [1, 4]
 >
 
@@ -43,6 +45,7 @@
   element_tile  = [1, 2],
 
   subgroup_strides = [1, 1],
+  outer_strides    = [0, 0],
   thread_strides   = [4, 1]
 >
 
@@ -100,6 +103,7 @@ builtin.module attributes { transform.with_named_sequence } {
   element_tile  = [1, 2],
 
   subgroup_strides = [1, 1],
+  outer_strides    = [1, 2],
   thread_strides   = [4, 1]
 >
 
@@ -111,6 +115,7 @@ builtin.module attributes { transform.with_named_sequence } {
   element_tile  = [2, 1],
 
   subgroup_strides = [1, 1],
+  outer_strides    = [0, 0],
   thread_strides   = [1, 4]
 >
 
@@ -122,6 +127,7 @@ builtin.module attributes { transform.with_named_sequence } {
   element_tile  = [1, 2],
 
   subgroup_strides = [1, 1],
+  outer_strides    = [0, 0],
   thread_strides   = [4, 1]
 >
 

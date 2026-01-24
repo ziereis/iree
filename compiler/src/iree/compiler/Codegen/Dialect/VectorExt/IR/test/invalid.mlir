@@ -8,10 +8,11 @@
   element_tile = [1, 1],
 
   subgroup_strides = [0, 0],
+  outer_strides = [0, 0],
   thread_strides = [0, 0]>
 
 func.func @invalid_layout(%arg0: vector<32x32xf16>) -> vector<32x32xf16> {
-  // expected-error @+1 {{Vector shape: [32, 32] does not match the layout (nested_layout<subgroup_tile = [1, 1], batch_tile = [1, 1], outer_tile = [1, 1], thread_tile = [1, 1], element_tile = [1, 1], subgroup_strides = [0, 0], thread_strides = [0, 0]>) at dim 0. Dimension expected by layout: 1 actual: 32}}
+  // expected-error @+1 {{Vector shape: [32, 32] does not match the layout (nested_layout<subgroup_tile = [1, 1], batch_tile = [1, 1], outer_tile = [1, 1], thread_tile = [1, 1], element_tile = [1, 1], subgroup_strides = [0, 0], outer_strides = [0, 0], thread_strides = [0, 0]>) at dim 0. Dimension expected by layout: 1 actual: 32}}
   %0 = iree_vector_ext.to_layout %arg0 to layout(#layout1) : vector<32x32xf16>
   return %0 : vector<32x32xf16>
 }
@@ -43,6 +44,7 @@ func.func @invalid_to_simt_vector_element_type(%simt : vector<64xf32>) -> vector
   element_tile = [1],
 
   subgroup_strides = [0, 0],
+  outer_strides = [0],
   thread_strides = [0]
 >
 

@@ -8,6 +8,7 @@
   element_tile = [64, 64],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
@@ -47,6 +48,7 @@ func.func @vectorize_matmul_layout(%A: tensor<64x64xf32>,
   element_tile = [64, 64],
 
   subgroup_strides = [0, 0],
+  outer_strides    = [0, 0],
   thread_strides   = [0, 0]
 >
 
