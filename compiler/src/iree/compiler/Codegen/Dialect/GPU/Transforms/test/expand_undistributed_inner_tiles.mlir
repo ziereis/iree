@@ -516,3 +516,43 @@ func.func @expand_output_tile_scaled_mfma_32x32x64_col_major(%lhs: tensor<?x?x1x
 // CHECK-INPUTS-NOT: tensor.expand_shape
 // CHECK-OUTPUTS: tensor.expand_shape %[[ACC]]
 // CHECK-OUTPUTS-SAME: tensor<?x?x32x4x8xf32>
+
+// -----
+
+#contraction_accesses = [
+ affine_map<() -> ()>,
+ affine_map<() -> ()>,
+ affine_map<() -> ()>
+]
+func.func @expand_nv_mma_sync_f16_16x8x16_column_major_lhs(
+    %lhs: tensor<16x16xf16>, %rhs: tensor<16x8xf16>, %acc: tensor<16x8xf16>) -> tensor<16x8xf16> {
+  %0 = iree_codegen.inner_tiled ins(%lhs, %rhs) outs(%acc) {
+    indexing_maps = #contraction_accesses,
+    iterator_types = [],
+    kind = #iree_gpu.mma_layout<NV_MMA_SYNC_F16_16x8x16_F16>,
+    semantics = #iree_gpu.mma_semantics<distributed = false, opaque = true>
+  } : tensor<16x16xf16>, tensor<16x8xf16> into tensor<16x8xf16>
+  return %0 : tensor<16x8xf16>
+}
+
+// CHECK-LABEL: func @expand_nv_mma_sync_f16_16x8x16_column_major_lhs
+// CHECK-SAME:    %[[LHS:[A-Za-z0-9]+]]: tensor<16x16xf16>
+// CHECK-SAME:    %[[RHS:[A-Za-z0-9]+]]: tensor<16x8xf16>
+// CHECK-SAME:    %[[ACC:[A-Za-z0-9]+]]: tensor<16x8xf16>
+
+// LHS has column-major outer strides (ostrides={1,2}), so it needs expand + transpose
+// Expanded shape: [2, 8, 2, 8] -> transposed with perm [2, 1, 0, 3] -> [2, 8, 2, 8]
+// CHECK-INPUTS:      %[[LHS_EXPANDED:.+]] = tensor.expand_shape %[[LHS]] {{\[}}[0, 1], [2, 3]{{\]}} output_shape [2, 8, 2, 8] : tensor<16x16xf16> into tensor<2x8x2x8xf16>
+// CHECK-INPUTS:      %[[LHS_EMPTY:.+]] = tensor.empty() : tensor<2x8x2x8xf16>
+// CHECK-INPUTS:      %[[LHS_TRANSPOSED:.+]] = linalg.transpose ins(%[[LHS_EXPANDED]] : tensor<2x8x2x8xf16>) outs(%[[LHS_EMPTY]] : tensor<2x8x2x8xf16>) permutation = [2, 1, 0, 3]
+
+// CHECK-INPUTS:      %[[RHS_EXPANDED:.+]] = tensor.expand_shape %[[RHS]] {{\[}}[0, 1], [2]{{\]}} output_shape [2, 8, 8] : tensor<16x8xf16> into tensor<2x8x8xf16>
+// CHECK-INPUTS-NOT:  linalg.transpose ins(%[[RHS_EXPANDED]]
+
+// CHECK-INPUTS:      %[[MMA:.+]] = iree_codegen.inner_tiled ins(%[[LHS_TRANSPOSED]], %[[RHS_EXPANDED]]) outs(%[[ACC]])
+// CHECK-INPUTS:      return %[[MMA]]
+
+// CHECK-OUTPUTS:     %[[ACC_EXPANDED:.+]] = tensor.expand_shape %[[ACC]] {{\[}}[0, 1], [2]{{\]}} output_shape [2, 8, 8] : tensor<16x8xf16> into tensor<2x8x8xf16>
+// CHECK-OUTPUTS:     %[[MMA:.+]] = iree_codegen.inner_tiled ins(%[[LHS]], %[[RHS]]) outs(%[[ACC_EXPANDED]])
+// CHECK-OUTPUTS:     %[[COLLAPSED:.+]] = tensor.collapse_shape %[[MMA]]
+// CHECK-OUTPUTS:     return %[[COLLAPSED]]

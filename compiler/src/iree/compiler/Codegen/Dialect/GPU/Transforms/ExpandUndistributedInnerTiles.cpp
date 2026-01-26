@@ -6,9 +6,11 @@
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUEnums.h"
 #include "iree/compiler/Codegen/Dialect/GPU/Transforms/Passes.h"
 #include "iree/compiler/Codegen/Dialect/GPU/Transforms/Transforms.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Transforms/WalkPatternRewriteDriver.h"
 
@@ -99,6 +101,28 @@ static LogicalResult materializeOperandExpandedShape(
   return success();
 }
 
+// Returns the permutation needed for transposing expanded outer dimensions
+// based on outer strides, or std::nullopt if no transpose is needed.
+static std::optional<SmallVector<int64_t>>
+computeOuterStridePermutation(ArrayRef<int64_t> ostrides,
+                              ArrayRef<ReassociationIndices> reassociations,
+                              int64_t outerRank) {
+  // Check if ostrides indicate column-major (ostrides[0] < ostrides[1])
+  if (ostrides.size() != 2 || ostrides[0] >= ostrides[1]) {
+    return std::nullopt;
+  }
+
+  int64_t expandedRank = reassociations.back().back() + 1;
+  SmallVector<int64_t> perm =
+      llvm::to_vector(llvm::seq<int64_t>(0, expandedRank));
+
+  int64_t firstOuterPos = reassociations[outerRank].front();
+  int64_t secondOuterPos = reassociations[outerRank + 1].front();
+  std::swap(perm[firstOuterPos], perm[secondOuterPos]);
+
+  return perm;
+}
+
 namespace {
 struct ExpandInnerTileShapes final : OpRewritePattern<Codegen::InnerTiledOp> {
   using Base::Base;
@@ -164,7 +188,28 @@ struct ExpandInnerTileShapes final : OpRewritePattern<Codegen::InnerTiledOp> {
       auto expandOp = tensor::ExpandShapeOp::create(rewriter, loc, expandedType,
                                                     operand, reassociations);
       maybeExpands[opIndex] = expandOp;
-      newOperands[opIndex] = expandOp.getResult();
+      Value expandedValue = expandOp.getResult();
+
+      Codegen::InnerTileDescAttrInterface kind = tiledOp.getKind();
+      if (isa<MMAAttr, VirtualMMAAttr>(kind)) {
+        MMASingleSubgroupLayout layout = getSingleSubgroupLayout(kind, opIndex);
+        int64_t outerRank = tiledOp.getOperandOuterRank(opIndex);
+
+        if (auto perm = computeOuterStridePermutation(
+                layout.ostrides, reassociations, outerRank)) {
+          SmallVector<int64_t> transposedShape = applyPermutation(
+              SmallVector<int64_t>(expandedType.getShape()), *perm);
+
+          auto emptyTensor = tensor::EmptyOp::create(
+              rewriter, loc, transposedShape, expandedType.getElementType());
+
+          auto transposeOp = linalg::TransposeOp::create(
+              rewriter, loc, expandedValue, emptyTensor, *perm);
+          expandedValue = transposeOp.getResult()[0];
+        }
+      }
+
+      newOperands[opIndex] = expandedValue;
 
       // The existing permutation does logical -> physical tile remapping,
       // so to create a new one, we take the reassociations of the
@@ -216,7 +261,7 @@ struct ExpandInnerTileShapes final : OpRewritePattern<Codegen::InnerTiledOp> {
     }
 
     SmallVector<Value> newResults(expandedTiledOp.getResults());
-    // If we had to expnad any accumulators, collapse the corresponding results
+    // If we had to expand any accumulators, collapse the corresponding results
     // back to their original shape.
     for (auto [resIndex, result] : llvm::enumerate(newResults)) {
       tensor::ExpandShapeOp tiedInitExpand = maybeExpands[numInputs + resIndex];
