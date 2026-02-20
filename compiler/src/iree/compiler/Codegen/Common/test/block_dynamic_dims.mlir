@@ -444,15 +444,16 @@ func.func @reshape_propagation_before_blocking_test(%arg0: index, %arg1: index, 
 
 // -----
 
-// Test that when two operands share a loop dimension with different
-// divisibility factors, the LCM is used so that all operands get a
-// consistent blocking factor and reshape propagation succeeds.
+// Test that when two operands of a contraction share a loop dimension (d0)
+// but have different divisibility factors (LHS d0 divisible by 64, init d0
+// divisible by 128), the LoopDimDivisibilityAnalysis computes the LCM (128)
+// so that both get blocked consistently.
 func.func @mismatched_divisibility_on_shared_dim(
     %m0 : index, %m1 : index,
-    %lhs : tensor<?x4096xf16>,
     %rhs : tensor<2048x4096xf16>) -> tensor<?x2048xf32> {
   %0 = util.assume.int %m0<udiv = 64> : index
   %1 = util.assume.int %m1<udiv = 128> : index
+  %lhs = tensor.empty(%0) : tensor<?x4096xf16>
   %init = tensor.empty(%1) : tensor<?x2048xf32>
   %2 = linalg.generic {
       indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>,
@@ -470,12 +471,8 @@ func.func @mismatched_divisibility_on_shared_dim(
   } -> tensor<?x2048xf32>
   return %2 : tensor<?x2048xf32>
 }
-// The LHS d0 dim has udiv=64, the output d0 dim has udiv=128.
-// The LCM is 128, so both should be blocked by 128. Reshape propagation
-// succeeds because all operands sharing d0 use the same factor.
 // CHECK-LABEL: func @mismatched_divisibility_on_shared_dim(
-//   CHECK-DAG:   %[[LHS:.+]] = tensor.expand_shape %{{.+}} {{\[}}[0, 1], [2]{{\]}}
-//  CHECK-SAME:     tensor<?x4096xf16> into tensor<?x128x4096xf16>
+//   CHECK-DAG:   %[[LHS:.+]] = tensor.empty(%{{.+}}) : tensor<?x128x4096xf16>
 //   CHECK-DAG:   %[[INIT:.+]] = tensor.empty(%{{.+}}) : tensor<?x128x2048xf32>
 //       CHECK:   %[[GENERIC:.+]] = linalg.generic
 //  CHECK-SAME:       ins(%[[LHS]],
