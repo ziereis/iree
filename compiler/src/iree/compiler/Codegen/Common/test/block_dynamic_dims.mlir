@@ -441,3 +441,44 @@ func.func @reshape_propagation_before_blocking_test(%arg0: index, %arg1: index, 
 //   CHECK-DAG:   %[[EMPTY:.+]] = tensor.empty{{.*}} tensor<?x128x4096xf8E4M3FNUZ>
 //       CHECK:   %[[GENERIC:.+]] = linalg.generic
 //  CHECK-SAME:     outs(%[[EMPTY]] : tensor<?x128x4096xf8E4M3FNUZ>)
+
+// -----
+
+// Test that when two operands share a loop dimension with different
+// divisibility factors, the LCM is used so that all operands get a
+// consistent blocking factor and reshape propagation succeeds.
+func.func @mismatched_divisibility_on_shared_dim(
+    %m0 : index, %m1 : index,
+    %lhs : tensor<?x4096xf16>,
+    %rhs : tensor<2048x4096xf16>) -> tensor<?x2048xf32> {
+  %0 = util.assume.int %m0<udiv = 64> : index
+  %1 = util.assume.int %m1<udiv = 128> : index
+  %init = tensor.empty(%1) : tensor<?x2048xf32>
+  %2 = linalg.generic {
+      indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>,
+                       affine_map<(d0, d1, d2) -> (d1, d2)>,
+                       affine_map<(d0, d1, d2) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel", "reduction"]}
+      ins(%lhs, %rhs : tensor<?x4096xf16>, tensor<2048x4096xf16>)
+      outs(%init : tensor<?x2048xf32>) {
+  ^bb0(%in: f16, %in_0: f16, %out: f32):
+    %3 = arith.extf %in : f16 to f32
+    %4 = arith.extf %in_0 : f16 to f32
+    %5 = arith.mulf %3, %4 : f32
+    %6 = arith.addf %out, %5 : f32
+    linalg.yield %6 : f32
+  } -> tensor<?x2048xf32>
+  return %2 : tensor<?x2048xf32>
+}
+// The LHS d0 dim has udiv=64, the output d0 dim has udiv=128.
+// The LCM is 128, so both should be blocked by 128. Reshape propagation
+// succeeds because all operands sharing d0 use the same factor.
+// CHECK-LABEL: func @mismatched_divisibility_on_shared_dim(
+//   CHECK-DAG:   %[[LHS:.+]] = tensor.expand_shape %{{.+}} {{\[}}[0, 1], [2]{{\]}}
+//  CHECK-SAME:     tensor<?x4096xf16> into tensor<?x128x4096xf16>
+//   CHECK-DAG:   %[[INIT:.+]] = tensor.empty(%{{.+}}) : tensor<?x128x2048xf32>
+//       CHECK:   %[[GENERIC:.+]] = linalg.generic
+//  CHECK-SAME:       ins(%[[LHS]],
+//  CHECK-SAME:       outs(%[[INIT]] :
+//       CHECK:   %[[COLLAPSED:.+]] = tensor.collapse_shape %[[GENERIC]] {{\[}}[0, 1], [2]{{\]}}
+//       CHECK:   return %[[COLLAPSED]]

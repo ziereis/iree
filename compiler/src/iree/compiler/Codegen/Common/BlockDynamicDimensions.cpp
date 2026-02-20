@@ -4,7 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree/compiler/Codegen/Common/TensorDynamicDimAnalysis.h"
+#include "iree/compiler/Codegen/Common/LoopDimDivisibilityAnalysis.h"
 #include "iree/compiler/Codegen/Common/Transforms.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/Transforms/Transforms.h"
 #include "iree/compiler/Codegen/Transforms/Transforms.h"
@@ -63,29 +63,35 @@ struct BlockDynamicDimensionsPass final
 };
 } // namespace
 
-/// Retrieve the divisibility information for dynamic dimensions of `v` if
-/// known.
+/// Derive the divisibility information for dynamic dimensions of an operand
+/// from the per-loop-dim analysis. Each tensor dimension gets its divisibility
+/// from the loop dimension it maps to (via the operand's indexing map).
 static TensorDivisibilityInfo
-getTensorDivisibilityInfo(const TensorDynamicDimAnalysis &dynamicDimAnalysis,
-                          Value v) {
+getDivisibilityFromLoopDims(const LoopDimDivisibilityAnalysis &loopDimAnalysis,
+                            IndexingMapOpInterface op, OpOperand &operand) {
   TensorDivisibilityInfo divisibilityInfo;
-  auto tensorType = dyn_cast<RankedTensorType>(v.getType());
+  auto tensorType = dyn_cast<RankedTensorType>(operand.get().getType());
   if (!tensorType) {
     return divisibilityInfo;
   }
 
-  for (auto [index, dim] : llvm::enumerate(tensorType.getShape())) {
-    if (!tensorType.isDynamicDim(index)) {
+  AffineMap map = op.getMatchingIndexingMap(&operand);
+  for (auto [tensorDim, expr] : llvm::enumerate(map.getResults())) {
+    if (!tensorType.isDynamicDim(tensorDim)) {
       continue;
     }
-    std::optional<IREE::Util::ConstantIntDivisibility> dimDivisibility =
-        dynamicDimAnalysis.getDivisibilityInfo(v, index);
-    if (!dimDivisibility) {
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (!dimExpr) {
       continue;
     }
-    divisibilityInfo[index] = std::move(dimDivisibility.value());
+    unsigned loopDim = dimExpr.getPosition();
+    std::optional<IREE::Util::ConstantIntDivisibility> divInfo =
+        loopDimAnalysis.getLoopDimDivisibility(op, loopDim);
+    if (!divInfo) {
+      continue;
+    }
+    divisibilityInfo[tensorDim] = *divInfo;
   }
-
   return divisibilityInfo;
 }
 
@@ -189,9 +195,14 @@ blockDynamicDimensionsOfValue(RewriterBase &rewriter,
 /// %1 = <some_op>(..., %collaped, ...) : ... , tensor<4x?x6xf32>
 /// ```
 static LogicalResult blockDynamicDimensions(
-    RewriterBase &rewriter, const TensorDynamicDimAnalysis &dynamicDimAnalysis,
+    RewriterBase &rewriter, const LoopDimDivisibilityAnalysis &loopDimAnalysis,
     Operation *operation, llvm::SmallDenseSet<int64_t> limitToOperandNumbers,
     llvm::SmallDenseSet<int64_t> limitToResultNumbers) {
+  auto indexingMapOp = dyn_cast<IndexingMapOpInterface>(operation);
+  if (!indexingMapOp) {
+    return success();
+  }
+
   for (OpOperand &operand : operation->getOpOperands()) {
     if (!limitToOperandNumbers.contains(operand.getOperandNumber())) {
       continue;
@@ -200,7 +211,7 @@ static LogicalResult blockDynamicDimensions(
       continue;
     }
     TensorDivisibilityInfo operandDivisibilityInfo =
-        getTensorDivisibilityInfo(dynamicDimAnalysis, operand.get());
+        getDivisibilityFromLoopDims(loopDimAnalysis, indexingMapOp, operand);
     if (operandDivisibilityInfo.empty()) {
       continue;
     }
@@ -214,19 +225,24 @@ static LogicalResult blockDynamicDimensions(
 
   OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPointAfter(operation);
+  auto dpsOp = dyn_cast<DestinationStyleOpInterface>(operation);
   for (OpResult result : operation->getResults()) {
     if (!limitToResultNumbers.contains(result.getResultNumber())) {
       continue;
     }
-    TensorDivisibilityInfo resultDivisibilityInfo =
-        getTensorDivisibilityInfo(dynamicDimAnalysis, result);
+    // For DPS ops, the result's indexing map is the init operand's map.
+    if (!dpsOp) {
+      continue;
+    }
+    OpOperand *initOperand = dpsOp.getDpsInitOperand(result.getResultNumber());
+    TensorDivisibilityInfo resultDivisibilityInfo = getDivisibilityFromLoopDims(
+        loopDimAnalysis, indexingMapOp, *initOperand);
     if (resultDivisibilityInfo.empty()) {
       continue;
     }
     std::optional<ReshapeOps> reshapes =
         blockDynamicDimensionsOfValue(rewriter, resultDivisibilityInfo, result);
     if (reshapes) {
-      llvm::SmallPtrSet<Operation *, 1> ignoreUses;
       auto replaceIf = [&](OpOperand &use) {
         Operation *user = use.getOwner();
         if (user == reshapes->expandShapeOp) {
@@ -246,7 +262,7 @@ static LogicalResult blockDynamicDimensions(
 
 /// Generic method for blocking all operands of an operation.
 static LogicalResult blockDynamicDimensionsOfAllTensorOperandsAndResults(
-    RewriterBase &rewriter, const TensorDynamicDimAnalysis &dynamicDimAnalysis,
+    RewriterBase &rewriter, const LoopDimDivisibilityAnalysis &loopDimAnalysis,
     Operation *op) {
   llvm::SmallDenseSet<int64_t> tensorOperandsList, tensorResultsList;
   for (OpOperand &opOperand : op->getOpOperands()) {
@@ -259,22 +275,22 @@ static LogicalResult blockDynamicDimensionsOfAllTensorOperandsAndResults(
       tensorResultsList.insert(result.getResultNumber());
     }
   }
-  return blockDynamicDimensions(rewriter, dynamicDimAnalysis, op,
+  return blockDynamicDimensions(rewriter, loopDimAnalysis, op,
                                 tensorOperandsList, tensorResultsList);
 }
 
 /// Block dynamic dimensions in operands of `LinalgOp`.
 static LogicalResult
 blockDynamicDimensions(RewriterBase &rewriter,
-                       const TensorDynamicDimAnalysis &dynamicDimAnalysis,
+                       const LoopDimDivisibilityAnalysis &loopDimAnalysis,
                        linalg::LinalgOp linalgOp) {
   if (isa<linalg::GenericOp>(linalgOp) && linalgOp.isAllParallelLoops()) {
     return blockDynamicDimensionsOfAllTensorOperandsAndResults(
-        rewriter, dynamicDimAnalysis, linalgOp);
+        rewriter, loopDimAnalysis, linalgOp);
   }
   if (linalg::isaContractionOpInterface(linalgOp)) {
     return blockDynamicDimensionsOfAllTensorOperandsAndResults(
-        rewriter, dynamicDimAnalysis, linalgOp);
+        rewriter, loopDimAnalysis, linalgOp);
   }
   return success();
 }
@@ -282,29 +298,28 @@ blockDynamicDimensions(RewriterBase &rewriter,
 /// Block dynamic dimensions in operands of `AttentionOp`.
 static LogicalResult
 blockDynamicDimensions(RewriterBase &rewriter,
-                       const TensorDynamicDimAnalysis &dynamicDimAnalysis,
+                       const LoopDimDivisibilityAnalysis &loopDimAnalysis,
                        IREE::LinalgExt::AttentionOp attentionOp) {
   // Only block the q and k values.
   llvm::SmallDenseSet<int64_t> prunedOperandsList, prunedResultsList;
   prunedOperandsList.insert(attentionOp.getQueryMutable().getOperandNumber());
   prunedOperandsList.insert(attentionOp.getKeyMutable().getOperandNumber());
-  return blockDynamicDimensions(rewriter, dynamicDimAnalysis, attentionOp,
+  return blockDynamicDimensions(rewriter, loopDimAnalysis, attentionOp,
                                 prunedOperandsList, prunedResultsList);
 }
 
 /// Dispatch to methods that block dynamic dimensions of operations.
 static LogicalResult
 blockDynamicDimensions(RewriterBase &rewriter,
-                       const TensorDynamicDimAnalysis &dynamicDimAnalysis,
+                       const LoopDimDivisibilityAnalysis &loopDimAnalysis,
                        Operation *operation) {
   return TypeSwitch<Operation *, LogicalResult>(operation)
       .Case([&](IREE::LinalgExt::AttentionOp attentionOp) {
-        return blockDynamicDimensions(rewriter, dynamicDimAnalysis,
-                                      attentionOp);
+        return blockDynamicDimensions(rewriter, loopDimAnalysis, attentionOp);
       })
       .Case([&](linalg::LinalgOp linalgOp) {
         if (clEnableBlockedMatmuls) {
-          return blockDynamicDimensions(rewriter, dynamicDimAnalysis, linalgOp);
+          return blockDynamicDimensions(rewriter, loopDimAnalysis, linalgOp);
         }
         return success();
       })
@@ -348,10 +363,15 @@ void BlockDynamicDimensionsPass::runOnOperation() {
     return signalPassFailure();
   }
 
+  LoopDimDivisibilityAnalysis loopDimAnalysis(dynamicDimAnalysis, operation);
+  if (failed(loopDimAnalysis.run())) {
+    return signalPassFailure();
+  }
+
   IRRewriter rewriter(context);
   auto walkResult = operation->walk([&](Operation *op) -> WalkResult {
     rewriter.setInsertionPoint(op);
-    return blockDynamicDimensions(rewriter, dynamicDimAnalysis, op);
+    return blockDynamicDimensions(rewriter, loopDimAnalysis, op);
   });
   if (walkResult.wasInterrupted()) {
     return signalPassFailure();

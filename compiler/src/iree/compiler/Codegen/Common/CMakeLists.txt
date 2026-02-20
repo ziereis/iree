@@ -58,6 +58,7 @@ iree_cc_library(
     "EncodingUtils.h"
     "ExtractAddressComputation.h"
     "FastMathPatterns.h"
+    "LoopDimDivisibilityAnalysis.h"
     "PassUtils.h"
     "Passes.h"
     "TensorDynamicDimAnalysis.h"
@@ -119,6 +120,7 @@ iree_cc_library(
     "IREELoopInvariantCodeMotion.cpp"
     "InstrumentMemoryAccesses.cpp"
     "LinkTuningSpecsPass.cpp"
+    "LoopDimDivisibilityAnalysis.cpp"
     "LowerExecutableUsingTransformDialect.cpp"
     "LowerUKernelDescriptors.cpp"
     "LowerUKernelsToCalls.cpp"
@@ -194,6 +196,7 @@ iree_cc_library(
     MLIRFunctionInterfaces
     MLIRGPUDialect
     MLIRIR
+    MLIRIndexingMapOpInterface
     MLIRLLVMCommonConversion
     MLIRLLVMDialect
     MLIRLinalgDialect

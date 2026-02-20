@@ -4,6 +4,9 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#ifndef IREE_COMPILER_CODEGEN_COMMON_TENSOR_DYNAMIC_DIM_ANALYSIS_H_
+#define IREE_COMPILER_CODEGEN_COMMON_TENSOR_DYNAMIC_DIM_ANALYSIS_H_
+
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
 #include "mlir/Analysis/DataFlow/IntegerRangeAnalysis.h"
 #include "mlir/Analysis/DataFlowFramework.h"
@@ -63,3 +66,5 @@ private:
 };
 
 } // namespace mlir::iree_compiler
+
+#endif // IREE_COMPILER_CODEGEN_COMMON_TENSOR_DYNAMIC_DIM_ANALYSIS_H_
