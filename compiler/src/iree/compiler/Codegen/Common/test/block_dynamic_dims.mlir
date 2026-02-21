@@ -441,3 +441,156 @@ func.func @reshape_propagation_before_blocking_test(%arg0: index, %arg1: index, 
 //   CHECK-DAG:   %[[EMPTY:.+]] = tensor.empty{{.*}} tensor<?x128x4096xf8E4M3FNUZ>
 //       CHECK:   %[[GENERIC:.+]] = linalg.generic
 //  CHECK-SAME:     outs(%[[EMPTY]] : tensor<?x128x4096xf8E4M3FNUZ>)
+
+// -----
+
+// Test that when two operands of a contraction share a loop dimension (d0)
+// but have different divisibility factors (LHS d0 divisible by 64, init d0
+// divisible by 128), the analysis computes the LCM (128) for both.
+func.func @mismatched_divisibility_on_shared_dim(
+    %m0 : index, %m1 : index,
+    %rhs : tensor<2048x4096xf16>) -> tensor<?x2048xf32> {
+  %0 = util.assume.int %m0<udiv = 64> : index
+  %1 = util.assume.int %m1<udiv = 128> : index
+  %lhs = tensor.empty(%0) : tensor<?x4096xf16>
+  %init = tensor.empty(%1) : tensor<?x2048xf32>
+  %2 = linalg.generic {
+      indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>,
+                       affine_map<(d0, d1, d2) -> (d1, d2)>,
+                       affine_map<(d0, d1, d2) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel", "reduction"]}
+      ins(%lhs, %rhs : tensor<?x4096xf16>, tensor<2048x4096xf16>)
+      outs(%init : tensor<?x2048xf32>) {
+  ^bb0(%in: f16, %in_0: f16, %out: f32):
+    %3 = arith.extf %in : f16 to f32
+    %4 = arith.extf %in_0 : f16 to f32
+    %5 = arith.mulf %3, %4 : f32
+    %6 = arith.addf %out, %5 : f32
+    linalg.yield %6 : f32
+  } -> tensor<?x2048xf32>
+  return %2 : tensor<?x2048xf32>
+}
+// CHECK-LABEL: func @mismatched_divisibility_on_shared_dim(
+//   CHECK-DAG:   %[[LHS:.+]] = tensor.empty(%{{.+}}) : tensor<?x128x4096xf16>
+//   CHECK-DAG:   %[[INIT:.+]] = tensor.empty(%{{.+}}) : tensor<?x128x2048xf32>
+//       CHECK:   %[[GENERIC:.+]] = linalg.generic
+//  CHECK-SAME:       ins(%[[LHS]],
+//  CHECK-SAME:       outs(%[[INIT]] :
+//       CHECK:   %[[COLLAPSED:.+]] = tensor.collapse_shape %[[GENERIC]] {{\[}}[0, 1], [2]{{\]}}
+//       CHECK:   return %[[COLLAPSED]]
+
+// -----
+
+// Test propagation of divisibility through equivalence classes.
+// %t0 has udiv=64 and %t1 has udiv=128. The first elementwise op ties
+// %t0.d0 and %t1.d0 on loop dim d0, so the analysis reconciles both to
+// lcm(64, 128) = 128. The second elementwise op uses only %t0, but should
+// still see the strengthened divisibility of 128.
+func.func @cross_op_divisibility_propagation(
+    %m0 : index, %m1 : index) -> (tensor<?xf32>, tensor<?xf32>) {
+  %0 = util.assume.int %m0<udiv = 64> : index
+  %1 = util.assume.int %m1<udiv = 128> : index
+  %t0 = tensor.empty(%0) : tensor<?xf32>
+  %t1 = tensor.empty(%1) : tensor<?xf32>
+  // First op: ties %t0.d0 and %t1.d0 on loop dim d0.
+  %init_a = tensor.empty(%0) : tensor<?xf32>
+  %a = linalg.generic {
+      indexing_maps = [affine_map<(d0) -> (d0)>,
+                       affine_map<(d0) -> (d0)>,
+                       affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%t0, %t1 : tensor<?xf32>, tensor<?xf32>)
+      outs(%init_a : tensor<?xf32>) {
+  ^bb0(%in0: f32, %in1: f32, %out: f32):
+    %3 = arith.addf %in0, %in1 : f32
+    linalg.yield %3 : f32
+  } -> tensor<?xf32>
+  // Second op: uses only %t0.
+  %init_b = tensor.empty(%0) : tensor<?xf32>
+  %b = linalg.generic {
+      indexing_maps = [affine_map<(d0) -> (d0)>,
+                       affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%t0 : tensor<?xf32>) outs(%init_b : tensor<?xf32>) {
+  ^bb0(%in: f32, %out: f32):
+    %4 = arith.mulf %in, %out : f32
+    linalg.yield %4 : f32
+  } -> tensor<?xf32>
+  return %a, %b : tensor<?xf32>, tensor<?xf32>
+}
+
+// CHECK-LABEL: func @cross_op_divisibility_propagation(
+//       CHECK:   %[[A:.+]] = linalg.generic
+//  CHECK-SAME:       ins({{.*}} tensor<?x128xf32>, tensor<?x128xf32>)
+//       CHECK:   %[[COLLAPSE_A:.+]] = tensor.collapse_shape %[[A]]
+//  CHECK-SAME:       tensor<?x128xf32> into tensor<?xf32>
+//       CHECK:   %[[B:.+]] = linalg.generic
+//  CHECK-SAME:       ins({{.*}} tensor<?x128xf32>)
+//       CHECK:   %[[COLLAPSE_B:.+]] = tensor.collapse_shape %[[B]]
+//  CHECK-SAME:       tensor<?x128xf32> into tensor<?xf32>
+//       CHECK:   return %[[COLLAPSE_A]], %[[COLLAPSE_B]]
+
+// -----
+
+// Test transitive propagation through equivalence classes.
+// %t0 (div 128) is tied to %t1 (no info) via op A,
+// and %t1 is tied to %t2 (div 64) via op B.
+// Transitivity: %t0.d0 == %t1.d0 == %t2.d0, so all get 128.
+// Op C uses only %t2, which has no direct connection to %t0.
+func.func @transitive_divisibility_propagation(
+    %m0 : index, %m1 : index, %m2 : index)
+    -> (tensor<?xf32>, tensor<?xf32>, tensor<?xf32>) {
+  %0 = util.assume.int %m0<udiv = 128> : index
+  %1 = util.assume.int %m2<udiv = 64> : index
+  %t0 = tensor.empty(%0) : tensor<?xf32>
+  %t1 = tensor.empty(%m1) : tensor<?xf32>  // no divisibility info
+  %t2 = tensor.empty(%1) : tensor<?xf32>
+  // Op A: ties %t0.d0 and %t1.d0.
+  %init_a = tensor.empty(%0) : tensor<?xf32>
+  %a = linalg.generic {
+      indexing_maps = [affine_map<(d0) -> (d0)>,
+                       affine_map<(d0) -> (d0)>,
+                       affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%t0, %t1 : tensor<?xf32>, tensor<?xf32>)
+      outs(%init_a : tensor<?xf32>) {
+  ^bb0(%in0: f32, %in1: f32, %out: f32):
+    %3 = arith.addf %in0, %in1 : f32
+    linalg.yield %3 : f32
+  } -> tensor<?xf32>
+  // Op B: ties %t1.d0 and %t2.d0.
+  %init_b = tensor.empty(%m1) : tensor<?xf32>
+  %b = linalg.generic {
+      indexing_maps = [affine_map<(d0) -> (d0)>,
+                       affine_map<(d0) -> (d0)>,
+                       affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%t1, %t2 : tensor<?xf32>, tensor<?xf32>)
+      outs(%init_b : tensor<?xf32>) {
+  ^bb0(%in0: f32, %in1: f32, %out: f32):
+    %4 = arith.addf %in0, %in1 : f32
+    linalg.yield %4 : f32
+  } -> tensor<?xf32>
+  // Op C: uses only %t2. Should still block by 128 via transitivity.
+  %init_c = tensor.empty(%1) : tensor<?xf32>
+  %c = linalg.generic {
+      indexing_maps = [affine_map<(d0) -> (d0)>,
+                       affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%t2 : tensor<?xf32>) outs(%init_c : tensor<?xf32>) {
+  ^bb0(%in: f32, %out: f32):
+    %5 = arith.mulf %in, %out : f32
+    linalg.yield %5 : f32
+  } -> tensor<?xf32>
+  return %a, %b, %c : tensor<?xf32>, tensor<?xf32>, tensor<?xf32>
+}
+// All three ops should block by 128.
+// CHECK-LABEL: func @transitive_divisibility_propagation(
+//       CHECK:   %[[A:.+]] = linalg.generic
+//  CHECK-SAME:       ins({{.*}} tensor<?x128xf32>, tensor<?x128xf32>)
+//       CHECK:   %[[B:.+]] = linalg.generic
+//  CHECK-SAME:       ins({{.*}} tensor<?x128xf32>, tensor<?x128xf32>)
+//       CHECK:   %[[C:.+]] = linalg.generic
+//  CHECK-SAME:       ins({{.*}} tensor<?x128xf32>)
+//       CHECK:   %[[COLLAPSE_C:.+]] = tensor.collapse_shape %[[C]]
+//  CHECK-SAME:       tensor<?x128xf32> into tensor<?xf32>

@@ -5,14 +5,17 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "iree/compiler/Codegen/Common/TensorDynamicDimAnalysis.h"
+#include <numeric>
 #include "iree/compiler/Dialect/TensorExt/IR/TensorExtOps.h"
 #include "iree/compiler/Dialect/Util/Analysis/IntegerDivisibilityAnalysis.h"
+#include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/IntegerRangeAnalysis.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
+#include "mlir/Interfaces/IndexingMapOpInterface.h"
 
 #define DEBUG_TYPE "iree-codegen-dynamic-dim-analysis"
 
@@ -217,6 +220,108 @@ static void updateTensorDimInfo(
   });
 }
 
+/// Reconcile divisibility information across tensor dimensions that are tied
+/// together through indexing maps.
+///
+/// When multiple operands of an IndexingMapOpInterface op map to the same loop
+/// dimension, their corresponding tensor dimensions must have the same runtime
+/// value. This means all divisibility constraints hold simultaneously on that
+/// shared value, so the strongest constraint is the LCM across all of them.
+///
+/// Furthermore, this relationship is transitive: if %t0.d0 == %t1.d0 (through
+/// op A) and %t1.d0 == %t2.d0 (through op B), then %t0.d0 == %t2.d0. We use
+/// equivalence classes to capture this transitivity and propagate the LCM
+/// divisibility to all members of each class.
+static void reconcileThroughIndexingMaps(
+    Operation *rootOperation,
+    TensorDynamicDimAnalysis::TensorDimDivisibilityInfo &divisibilityInfo) {
+  using DimKey = std::tuple<Value, unsigned>;
+  llvm::EquivalenceClasses<DimKey> ec;
+
+  // Phase 1: Build equivalence classes. For each IndexingMapOpInterface op,
+  // find all (Value, tensorDim) pairs that map to each loop dimension and
+  // union them.
+  rootOperation->walk([&](IndexingMapOpInterface op) {
+    SmallVector<AffineMap> maps = op.getIndexingMapsArray();
+    bool allProjectedPermutation = llvm::all_of(
+        maps, [](AffineMap map) { return map.isProjectedPermutation(); });
+    if (!allProjectedPermutation) {
+      return;
+    }
+
+    // For each loop dim, track the first (Value, tensorDim) we see so we can
+    // union subsequent ones with it.
+    DenseMap<unsigned, DimKey> firstForLoopDim;
+
+    for (OpOperand &operand : op->getOpOperands()) {
+      auto tensorType = dyn_cast<RankedTensorType>(operand.get().getType());
+      if (!tensorType) {
+        continue;
+      }
+
+      AffineMap map = op.getMatchingIndexingMap(&operand);
+      for (auto [tensorDim, expr] : llvm::enumerate(map.getResults())) {
+        auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+        if (!dimExpr) {
+          continue;
+        }
+        if (!tensorType.isDynamicDim(tensorDim)) {
+          continue;
+        }
+
+        unsigned loopDim = dimExpr.getPosition();
+        DimKey key = {operand.get(), static_cast<unsigned>(tensorDim)};
+
+        auto it = firstForLoopDim.find(loopDim);
+        if (it != firstForLoopDim.end()) {
+          ec.unionSets(it->second, key);
+        } else {
+          firstForLoopDim[loopDim] = key;
+          ec.insert(key);
+        }
+      }
+    }
+  });
+
+  // Phase 2: For each equivalence class, compute the LCM of all members'
+  // divisibility and update every member with the result.
+  for (auto I = ec.begin(), E = ec.end(); I != E; ++I) {
+    if (!(*I)->isLeader()) {
+      continue;
+    }
+
+    uint64_t lcmUdiv = 1, lcmSdiv = 1;
+    bool hasInfo = false;
+    for (const DimKey &key : ec.members(**I)) {
+      auto it = divisibilityInfo.find(key);
+      if (it != divisibilityInfo.end()) {
+        lcmUdiv = std::lcm(lcmUdiv, it->second.udiv());
+        lcmSdiv = std::lcm(lcmSdiv, it->second.sdiv());
+        hasInfo = true;
+      }
+    }
+
+    if (!hasInfo || (lcmUdiv <= 1 && lcmSdiv <= 1)) {
+      continue;
+    }
+
+    IREE::Util::ConstantIntDivisibility classDivisibility(lcmUdiv, lcmSdiv);
+    for (const DimKey &key : ec.members(**I)) {
+      divisibilityInfo[key] = classDivisibility;
+    }
+  }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "After reconciliation through indexing maps:\n";
+    for (auto &[key, divInfo] : divisibilityInfo) {
+      auto [v, dim] = key;
+      llvm::dbgs() << "\t(";
+      v.printAsOperand(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << ", dim " << dim << ") : " << divInfo << "\n";
+    }
+  });
+}
+
 TensorDynamicDimAnalysis::TensorDynamicDimAnalysis(Operation *rootOp)
     : rootOperation(rootOp) {
   solver.load<mlir::dataflow::DeadCodeAnalysis>();
@@ -229,11 +334,16 @@ LogicalResult TensorDynamicDimAnalysis::run() {
     return failure();
   }
 
-  // Walk the IR pre-order, forward and update the dynamic information for each
-  // tensor.
+  // Phase 1: Walk the IR pre-order, forward and update the dynamic information
+  // for each tensor from its definition.
   rootOperation->walk<WalkOrder::PreOrder>([&](Operation *op) {
     updateTensorDimInfo(op, solver, divisibilityInfo, rangeInfo);
   });
+
+  // Phase 2: Reconcile divisibility across tensor dimensions that are tied
+  // together through indexing maps. This propagates stronger divisibility
+  // constraints transitively across operations.
+  reconcileThroughIndexingMaps(rootOperation, divisibilityInfo);
 
   return success();
 }
