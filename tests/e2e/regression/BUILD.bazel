@@ -103,6 +103,16 @@ iree_check_single_backend_test_suite(
 )
 
 iree_check_single_backend_test_suite(
+    name = "check_regression_generic_quantized_contraction_llvm-cpu",
+    srcs = [
+        "generic_quantized_contraction_vs_matmul.mlir",
+    ],
+    compiler_flags = ["--iree-llvmcpu-target-cpu=generic"],
+    driver = "local-task",
+    target_backend = "llvm-cpu",
+)
+
+iree_check_single_backend_test_suite(
     name = "check_regression_vmvx",
     srcs = [
         "layernorm.mlir",

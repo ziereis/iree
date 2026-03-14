@@ -132,6 +132,15 @@ def LinalgQuantizedConvToConvPass
 def LinalgQuantizedMatmulToMatmulPass
     : InterfacePass<"iree-global-opt-quantized-matmul-to-matmul", "mlir::FunctionOpInterface"> {
   let summary = "lower quantized_matmul to matmul";
+  let options = [
+    Option<"shiftToSignedDomain", "shift-to-signed-domain",
+           "bool", /*default=*/"true",
+           "When decomposing a generic quantized contraction with mixed "
+           "sign extensions (e.g. extui on LHS and extsi on RHS), shift "
+           "the unsigned operand into the signed domain so the resulting "
+           "matmul uses extsi on both sides. Disable this to preserve the "
+           "mixed-sign structure for accelerators that support it natively.">
+  ];
 }
 
 def RaiseSpecialOpsPass :

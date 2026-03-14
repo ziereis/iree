@@ -48,9 +48,13 @@ Value createGenericElementwiseCastOp(
     ArrayRef<NamedAttribute> attrs,
     std::optional<IREE::Encoding::EncodingAttr> encoding = std::nullopt);
 
+/// The kind of integer extension to use when reducing.
+enum class IntExtKind { ExtSI, ExtUI };
+
 // Reduce the input value along the reduction dimensions.
 Value sumReduceDimensionSubset(ImplicitLocOpBuilder &rewriter, Value val,
-                               Type accETy, ArrayRef<bool> is_reduction);
+                               Type accETy, ArrayRef<bool> is_reduction,
+                               IntExtKind extKind = IntExtKind::ExtSI);
 
 } // namespace mlir::iree_compiler::GlobalOptimization
 

@@ -105,7 +105,8 @@ Value createGenericElementwiseCastOp(
 }
 
 Value sumReduceDimensionSubset(ImplicitLocOpBuilder &rewriter, Value val,
-                               Type accETy, ArrayRef<bool> is_reduction) {
+                               Type accETy, ArrayRef<bool> is_reduction,
+                               IntExtKind extKind) {
   auto context = val.getContext();
   RankedTensorType ty = cast<RankedTensorType>(val.getType());
 
@@ -158,7 +159,11 @@ Value sumReduceDimensionSubset(ImplicitLocOpBuilder &rewriter, Value val,
              rewriter, zeroAcc.getType(), ValueRange{val}, ValueRange{zeroAcc},
              affineMaps, iterators,
              [=](OpBuilder &b, Location loc, ValueRange args) {
-               Value ext = arith::ExtSIOp::create(b, loc, accETy, args[0]);
+               Value ext;
+               if (extKind == IntExtKind::ExtUI)
+                 ext = arith::ExtUIOp::create(b, loc, accETy, args[0]);
+               else
+                 ext = arith::ExtSIOp::create(b, loc, accETy, args[0]);
                Value sum = arith::AddIOp::create(b, loc, ext, args[1]);
                linalg::YieldOp::create(b, loc, sum);
              })
