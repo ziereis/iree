@@ -29,11 +29,13 @@
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/DialectResourceBlobManager.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OperationSupport.h"
@@ -2357,6 +2359,299 @@ LogicalResult ExpReductionOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// QuantizeAffineOp and DequantizeAffineOp
+//===----------------------------------------------------------------------===//
+
+/// Verifies the operand structure shared by `quantize_affine` and
+/// `dequantize_affine`, i.e. everything that does not depend on which side of
+/// the op holds the quantized value.
+template <typename OpTy>
+static LogicalResult verifyAffineQuantizationOp(OpTy op) {
+  ShapedType inputType = op.getInputType();
+  ShapedType outputType = op.getOutputType();
+  int64_t rank = inputType.getRank();
+
+  SmallVector<AffineMap> maps = op.getIndexingMapsArray();
+  size_t expectedMaps = op.getZeroPoint() ? 4 : 3;
+  if (maps.size() != expectedMaps) {
+    return op.emitOpError("expected ")
+           << expectedMaps << " indexing maps, one per operand, got "
+           << maps.size();
+  }
+
+  for (auto [index, map] : llvm::enumerate(maps)) {
+    if (static_cast<int64_t>(map.getNumDims()) != rank) {
+      return op.emitOpError("expected indexing map ")
+             << index << " to have " << rank
+             << " dimensions to match the rank of the quantized value, got "
+             << map.getNumDims();
+    }
+    if (map.getNumSymbols() != 0) {
+      return op.emitOpError("expected indexing map ")
+             << index << " to have no symbols";
+    }
+    // Non-projected maps, such as `d1 floordiv 32` for block quantization, are
+    // not supported; blocked quantization is expressed on an expanded shape.
+    if (!map.isProjectedPermutation()) {
+      return op.emitOpError("expected indexing map ")
+             << index << " to be a projected permutation, got "
+             << AffineMapAttr::get(map);
+    }
+  }
+
+  // The op is elementwise over the value, so every value element is read and
+  // written exactly once: the value maps have to be permutations, not merely
+  // projections. A non-identity permutation is a transpose folded into the op.
+  AffineMap inputMap = maps.front();
+  AffineMap outputMap = maps.back();
+  for (auto [name, map] : {std::make_pair("input", inputMap),
+                           std::make_pair("output", outputMap)}) {
+    if (static_cast<int64_t>(map.getNumResults()) != rank) {
+      return op.emitOpError("expected the ")
+             << name << " indexing map to be a permutation with " << rank
+             << " results, got " << AffineMapAttr::get(map);
+    }
+  }
+
+  // The input map names the input dimension each iteration dim reads, which is
+  // what gives the iteration space its extents. The output has to have those
+  // same extents, reordered by its own map.
+  SmallVector<int64_t> iterationDimToInputDim(rank);
+  for (auto [position, expr] : llvm::enumerate(inputMap.getResults())) {
+    iterationDimToInputDim[cast<AffineDimExpr>(expr).getPosition()] = position;
+  }
+  SmallVector<int64_t> expectedOutputShape =
+      llvm::map_to_vector(outputMap.getResults(), [&](AffineExpr expr) {
+        return inputType.getDimSize(
+            iterationDimToInputDim[cast<AffineDimExpr>(expr).getPosition()]);
+      });
+  if (outputType.getShape() != ArrayRef<int64_t>(expectedOutputShape)) {
+    return op.emitOpError("expected input and output to have the same shape up "
+                          "to their indexing maps, got ")
+           << inputType << " and " << outputType;
+  }
+
+  AffineMap scaleMap = maps[1];
+
+  if (!isa<FloatType>(op.getScaleElementType())) {
+    return op.emitOpError(
+               "expected scale to have a floating point element type, got ")
+           << op.getScaleElementType();
+  }
+
+  auto verifyQParam = [&](StringRef name, Value qparam,
+                          AffineMap qparamMap) -> LogicalResult {
+    int64_t qparamRank = OpTy::getQParamRank(qparam);
+    if (qparamRank != static_cast<int64_t>(qparamMap.getNumResults())) {
+      return op.emitOpError("expected ")
+             << name << " to have rank " << qparamMap.getNumResults()
+             << " to match the number of results of its indexing map, got "
+             << qparamRank;
+    }
+    if (auto qparamType = dyn_cast<ShapedType>(qparam.getType())) {
+      for (auto [qparamDim, expr] : llvm::enumerate(qparamMap.getResults())) {
+        int64_t valueDim =
+            iterationDimToInputDim[cast<AffineDimExpr>(expr).getPosition()];
+        int64_t valueSize = inputType.getDimSize(valueDim);
+        int64_t qparamSize = qparamType.getDimSize(qparamDim);
+        if (ShapedType::isDynamic(qparamSize) ||
+            ShapedType::isDynamic(valueSize)) {
+          continue;
+        }
+        if (qparamSize != valueSize) {
+          return op.emitOpError("expected quantization parameter dimension ")
+                 << qparamDim << " to have size " << valueSize
+                 << " to match dimension " << valueDim
+                 << " of the quantized value, got " << qparamSize;
+        }
+      }
+    }
+    return success();
+  };
+  if (failed(verifyQParam("scale", op.getScale(), scaleMap))) {
+    return failure();
+  }
+
+  Value zeroPoint = op.getZeroPoint();
+  if (!zeroPoint) {
+    if (op.getZpUnsigned()) {
+      return op.emitOpError(
+          "zp_unsigned is only allowed when a zero_point operand is present");
+    }
+    return success();
+  }
+  Type zeroPointType = zeroPoint.getType();
+  if (failed(verifyQParam("zero_point", zeroPoint, maps[2]))) {
+    return failure();
+  }
+  if (!getElementTypeOrSelf(zeroPointType).isInteger()) {
+    return op.emitOpError(
+               "expected zero_point to have an integer element type, got ")
+           << getElementTypeOrSelf(zeroPointType);
+  }
+  return success();
+}
+
+/// Verifies that the inclusive range `[quantMin, quantMax]` is representable
+/// in `storageType` when interpreted with the given signedness.
+static LogicalResult verifyQuantizationRange(Operation *op, Type storageType,
+                                             int64_t quantMin, int64_t quantMax,
+                                             bool isUnsigned) {
+  if (quantMin > quantMax) {
+    return op->emitOpError("expected quant_min to not exceed quant_max, got [")
+           << quantMin << ", " << quantMax << "]";
+  }
+  auto integerType = dyn_cast<IntegerType>(storageType);
+  // Ranges of 64 bit (and wider) storage types cannot overflow anything we can
+  // express in the attribute, so there is nothing to check.
+  if (!integerType || integerType.getWidth() >= 64) {
+    return success();
+  }
+  unsigned width = integerType.getWidth();
+  int64_t typeMin = isUnsigned ? 0 : llvm::minIntN(width);
+  int64_t typeMax = isUnsigned ? static_cast<int64_t>(llvm::maxUIntN(width))
+                               : llvm::maxIntN(width);
+  if (quantMin < typeMin || quantMax > typeMax) {
+    return op->emitOpError("quantization range [")
+           << quantMin << ", " << quantMax << "] is not representable in "
+           << (isUnsigned ? "unsigned " : "signed ") << storageType;
+  }
+  return success();
+}
+
+LogicalResult QuantizeAffineOp::verify() {
+  if (failed(verifyAffineQuantizationOp(*this))) {
+    return failure();
+  }
+  Type realType = getInputType().getElementType();
+  Type storageType = getOutputType().getElementType();
+  if (!isa<FloatType>(realType)) {
+    return emitOpError("expected input to have a floating point element type, "
+                       "got ")
+           << realType;
+  }
+  if (!storageType.isInteger()) {
+    return emitOpError("expected output to have an integer element type, got ")
+           << storageType;
+  }
+  return verifyQuantizationRange(getOperation(), storageType,
+                                 getQuantMinValue(), getQuantMaxValue(),
+                                 getStorageUnsigned());
+}
+
+std::optional<IntegerType> DequantizeAffineOp::getZeroPointDifferenceType() {
+  assert(getZeroPoint() && "expected a zero_point operand");
+  unsigned storageWidth =
+      cast<IntegerType>(getInputType().getElementType()).getWidth();
+  // The zero point is a point on the quantized grid, so its values fit in the
+  // storage type however wide its own element type happens to be. The width
+  // therefore only depends on the storage type: subtracting two
+  // storageWidth-bit values needs storageWidth + 1 bits. A zero point whose
+  // type is wider than that carries no extra information and is narrowed.
+  unsigned width = std::max<unsigned>(llvm::PowerOf2Ceil(storageWidth + 1), 8u);
+  if (width > 64) {
+    return std::nullopt;
+  }
+  return IntegerType::get(getContext(), width);
+}
+
+LogicalResult DequantizeAffineOp::verify() {
+  if (failed(verifyAffineQuantizationOp(*this))) {
+    return failure();
+  }
+  Type storageType = getInputType().getElementType();
+  Type realType = getOutputType().getElementType();
+  if (!storageType.isInteger()) {
+    return emitOpError("expected input to have an integer element type, got ")
+           << storageType;
+  }
+  if (!isa<FloatType>(realType)) {
+    return emitOpError("expected output to have a floating point element type, "
+                       "got ")
+           << realType;
+  }
+  if (getZeroPoint()) {
+    if (!getZeroPointDifferenceType()) {
+      return emitOpError("cannot subtract a zero point from a ")
+             << storageType << " value without exceeding 64 bits";
+    }
+    // The zero point is narrowed to the width the storage grid needs, so a
+    // constant that is off the grid would be silently truncated. Reject it
+    // here rather than miscompile it.
+    DenseIntElementsAttr zeroPointAttr;
+    if (matchPattern(getZeroPoint(), m_Constant(&zeroPointAttr))) {
+      unsigned storageWidth = cast<IntegerType>(storageType).getWidth();
+      bool isUnsigned = getInputUnsigned();
+      int64_t lowerBound = isUnsigned ? 0 : llvm::minIntN(storageWidth);
+      int64_t upperBound =
+          isUnsigned ? static_cast<int64_t>(llvm::maxUIntN(storageWidth))
+                     : llvm::maxIntN(storageWidth);
+      for (const APInt &value : zeroPointAttr.getValues<APInt>()) {
+        int64_t zeroPoint =
+            getZpUnsigned() ? value.getZExtValue() : value.getSExtValue();
+        if (zeroPoint < lowerBound || zeroPoint > upperBound) {
+          return emitOpError("zero point ")
+                 << zeroPoint << " is not representable in the storage type "
+                 << storageType << ", whose range is [" << lowerBound << ", "
+                 << upperBound << "]";
+        }
+      }
+    }
+  }
+  std::optional<int64_t> quantMin = getQuantMinValue();
+  std::optional<int64_t> quantMax = getQuantMaxValue();
+  if (quantMin.has_value() != quantMax.has_value()) {
+    return emitOpError("expected quant_min and quant_max to be specified "
+                       "together");
+  }
+  if (quantMin) {
+    return verifyQuantizationRange(getOperation(), storageType, *quantMin,
+                                   *quantMax, getInputUnsigned());
+  }
+  return success();
+}
+
+// Both ops implement LinalgFusionInterface and IndexingMapOpInterface, which
+// declare overlapping methods. Defining them on the op itself is what keeps
+// the two sets of defaults from being ambiguous.
+#define DEFINE_AFFINE_QUANTIZATION_OP_METHODS(OP_NAME)                         \
+  SmallVector<AffineMap> OP_NAME::getIndexingMapsArray() {                     \
+    return llvm::to_vector(                                                    \
+        getIndexingMaps().getAsValueRange<AffineMapAttr>());                   \
+  }                                                                            \
+                                                                               \
+  AffineMap OP_NAME::getMatchingIndexingMap(OpOperand *operand) {              \
+    assert(operand->getOwner() == getOperation());                             \
+    return getIndexingMapsArray()[operand->getOperandNumber()];                \
+  }                                                                            \
+                                                                               \
+  SmallVector<AffineMap> OP_NAME::getIndexingMapsForOperands() {               \
+    SmallVector<AffineMap> maps = getIndexingMapsArray();                      \
+    maps.resize(getNumDpsInputs());                                            \
+    return maps;                                                               \
+  }                                                                            \
+                                                                               \
+  SmallVector<AffineMap> OP_NAME::getIndexingMapsForResults() {                \
+    return {getIndexingMapsArray().back()};                                    \
+  }                                                                            \
+                                                                               \
+  SmallVector<int64_t> OP_NAME::getStaticLoopRanges() {                        \
+    return applyPermutationMap<int64_t>(inversePermutation(getInputMap()),     \
+                                        getInputType().getShape());            \
+  }                                                                            \
+                                                                               \
+  LogicalResult OP_NAME::reifyResultShapes(                                    \
+      OpBuilder &b, ReifiedRankedShapedTypeDims &reifiedReturnShapes) {        \
+    return cast<LinalgExtOp>(getOperation())                                   \
+        .reifyResultShapes(b, reifiedReturnShapes);                            \
+  }
+
+DEFINE_AFFINE_QUANTIZATION_OP_METHODS(QuantizeAffineOp)
+DEFINE_AFFINE_QUANTIZATION_OP_METHODS(DequantizeAffineOp)
+
+#undef DEFINE_AFFINE_QUANTIZATION_OP_METHODS
+
+//===----------------------------------------------------------------------===//
 // Im2colOp
 //===----------------------------------------------------------------------===//
 
@@ -3382,6 +3677,8 @@ DEFINE_OP_GET_EFFECTS(WinogradOutputTransformOp)
 DEFINE_OP_GET_EFFECTS(AttentionOp)
 DEFINE_OP_GET_EFFECTS(OnlineAttentionOp)
 DEFINE_OP_GET_EFFECTS(ExpReductionOp)
+DEFINE_OP_GET_EFFECTS(QuantizeAffineOp)
+DEFINE_OP_GET_EFFECTS(DequantizeAffineOp)
 DEFINE_OP_GET_EFFECTS(Im2colOp)
 DEFINE_OP_GET_EFFECTS(CustomOp)
 

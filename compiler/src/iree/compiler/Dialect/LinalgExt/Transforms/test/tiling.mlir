@@ -4496,3 +4496,78 @@ module attributes { transform.with_named_sequence } {
     transform.yield
   }
 }
+
+// -----
+
+func.func @dequantize_affine_tiling(
+    %input: tensor<128x64xi8>, %scale: tensor<128xf32>, %zp: tensor<128xi8>,
+    %init: tensor<128x64xf32>) -> tensor<128x64xf32> {
+  %0 = iree_linalg_ext.dequantize_affine
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0)>,
+                        affine_map<(d0, d1) -> (d0)>,
+                        affine_map<(d0, d1) -> (d0, d1)>]}
+      ins(%input, %scale, %zp : tensor<128x64xi8>, tensor<128xf32>, tensor<128xi8>)
+      outs(%init : tensor<128x64xf32>) -> tensor<128x64xf32>
+  return %0 : tensor<128x64xf32>
+}
+module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%module_op: !transform.any_op {transform.readonly}) {
+    %0 = transform.structured.match ops{["iree_linalg_ext.dequantize_affine"]} in %module_op : (!transform.any_op) -> !transform.any_op
+    %1, %loops:2 = transform.structured.tile_using_for %0 tile_sizes [32, 16] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+    transform.yield
+  }
+}
+// CHECK-LABEL: func.func @dequantize_affine_tiling(
+//  CHECK-SAME:   %[[INPUT:[a-zA-Z0-9_]+]]
+//  CHECK-SAME:   %[[SCALE:[a-zA-Z0-9_]+]]
+//  CHECK-SAME:   %[[ZP:[a-zA-Z0-9_]+]]
+//  CHECK-SAME:   %[[INIT:[a-zA-Z0-9_]+]]
+//       CHECK:   scf.for %[[I:[a-zA-Z0-9_]+]] = %c0 to %c128 step %c32
+//       CHECK:     scf.for %[[J:[a-zA-Z0-9_]+]] = %c0 to %c64 step %c16
+//   CHECK-DAG:       %[[INPUT_SLICE:.+]] = tensor.extract_slice %[[INPUT]][%[[I]], %[[J]]] [32, 16] [1, 1]
+// The quantization parameters are sliced by their indexing map, so only the
+// tile's channels are read and the second loop does not slice them at all.
+//   CHECK-DAG:       %[[SCALE_SLICE:.+]] = tensor.extract_slice %[[SCALE]][%[[I]]] [32] [1]
+//   CHECK-DAG:       %[[ZP_SLICE:.+]] = tensor.extract_slice %[[ZP]][%[[I]]] [32] [1]
+//   CHECK-DAG:       %[[INIT_SLICE:.+]] = tensor.extract_slice %{{.+}}[%[[I]], %[[J]]] [32, 16] [1, 1]
+//       CHECK:       iree_linalg_ext.dequantize_affine
+//  CHECK-SAME:         ins(%[[INPUT_SLICE]], %[[SCALE_SLICE]], %[[ZP_SLICE]] :
+//  CHECK-SAME:         outs(%[[INIT_SLICE]] :
+
+// -----
+
+// A transpose folded into the op: the tile of the output is the tile of the
+// iteration space with its dimensions swapped, so the tile sizes land on the
+// output in the opposite order.
+func.func @dequantize_affine_transposed_tiling(
+    %input: tensor<128x64xi8>, %scale: tensor<128xf32>,
+    %init: tensor<64x128xf32>) -> tensor<64x128xf32> {
+  %0 = iree_linalg_ext.dequantize_affine
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0)>,
+                        affine_map<(d0, d1) -> (d1, d0)>]}
+      ins(%input, %scale : tensor<128x64xi8>, tensor<128xf32>)
+      outs(%init : tensor<64x128xf32>) -> tensor<64x128xf32>
+  return %0 : tensor<64x128xf32>
+}
+module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%module_op: !transform.any_op {transform.readonly}) {
+    %0 = transform.structured.match ops{["iree_linalg_ext.dequantize_affine"]} in %module_op : (!transform.any_op) -> !transform.any_op
+    %1, %loops:2 = transform.structured.tile_using_for %0 tile_sizes [32, 16] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+    transform.yield
+  }
+}
+// CHECK-LABEL: func.func @dequantize_affine_transposed_tiling(
+//  CHECK-SAME:   %[[INPUT:[a-zA-Z0-9_]+]]
+//  CHECK-SAME:   %[[SCALE:[a-zA-Z0-9_]+]]
+//  CHECK-SAME:   %[[INIT:[a-zA-Z0-9_]+]]
+//       CHECK:   scf.for %[[I:[a-zA-Z0-9_]+]] = %c0 to %c128 step %c32
+//       CHECK:     scf.for %[[J:[a-zA-Z0-9_]+]] = %c0 to %c64 step %c16
+//   CHECK-DAG:       %[[INPUT_SLICE:.+]] = tensor.extract_slice %[[INPUT]][%[[I]], %[[J]]] [32, 16] [1, 1]
+//   CHECK-DAG:       %[[SCALE_SLICE:.+]] = tensor.extract_slice %[[SCALE]][%[[I]]] [32] [1]
+//   CHECK-DAG:       %[[INIT_SLICE:.+]] = tensor.extract_slice %{{.+}}[%[[J]], %[[I]]] [16, 32] [1, 1]
+//       CHECK:       iree_linalg_ext.dequantize_affine
+//  CHECK-SAME:         ins(%[[INPUT_SLICE]], %[[SCALE_SLICE]] :
+//  CHECK-SAME:         outs(%[[INIT_SLICE]] :
+//       CHECK:       tensor.insert_slice %{{.+}} into %{{.+}}[%[[J]], %[[I]]] [16, 32] [1, 1]

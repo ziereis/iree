@@ -1323,4 +1323,131 @@ FailureOr<SmallVector<Value>> ExpReductionOp::decomposeOperation(OpBuilder &b) {
       [](linalg::GenericOp op) -> Value { return op->getResult(0); });
 }
 
+//===----------------------------------------------------------------------===//
+// QuantizeAffineOp and DequantizeAffineOp
+//===----------------------------------------------------------------------===//
+
+/// Builds the elementwise `linalg.generic` that both quantization ops decompose
+/// into. `bodyBuilder` receives the scalar arguments in operand order.
+template <typename OpTy>
+static SmallVector<Value> buildQuantizationGeneric(
+    OpTy op, OpBuilder &b,
+    function_ref<Value(OpBuilder &, Location, ValueRange)> bodyBuilder) {
+  Location loc = op.getLoc();
+  SmallVector<Value> inputs{op.getInput(), op.getScale()};
+  if (Value zeroPoint = op.getZeroPoint()) {
+    inputs.push_back(zeroPoint);
+  }
+  SmallVector<utils::IteratorType> iteratorTypes(op.getRank(),
+                                                 utils::IteratorType::parallel);
+  auto genericOp = linalg::GenericOp::create(
+      b, loc, op->getResultTypes(), inputs, ValueRange{op.getOutput()},
+      op.getIndexingMapsArray(), iteratorTypes,
+      [&](OpBuilder &nested, Location nestedLoc, ValueRange args) {
+        Value result = bodyBuilder(nested, nestedLoc, args);
+        linalg::YieldOp::create(nested, nestedLoc, result);
+      });
+  return SmallVector<Value>(genericOp->getResults());
+}
+
+FailureOr<SmallVector<Value>>
+DequantizeAffineOp::decomposeOperation(OpBuilder &b) {
+  // The op specifies its arithmetic in the scale's element type, so the
+  // multiply happens there and the product is converted to the output type
+  // afterwards.
+  Type computeType = getScaleElementType();
+  Type realType = getOutputType().getElementType();
+  bool inputUnsigned = getInputUnsigned();
+  bool zpUnsigned = getZpUnsigned();
+  bool symmetric = isSymmetric();
+  // Verified to fit in 64 bits, so this is safe to dereference below.
+  IntegerType differenceType =
+      symmetric ? IntegerType() : *getZeroPointDifferenceType();
+
+  return buildQuantizationGeneric(
+      *this, b, [&](OpBuilder &nested, Location loc, ValueRange args) -> Value {
+        Value quantized = args[0];
+        Value scale = args[1];
+        Value real;
+        if (symmetric) {
+          real = convertScalarToDtype(nested, loc, quantized, computeType,
+                                      /*isUnsignedCast=*/inputUnsigned);
+        } else {
+          // The difference is computed in an integer type wide enough that it
+          // cannot wrap, which is one legal reading of the op's exact
+          // arithmetic semantics. A consumer that instead keeps the raw values
+          // and corrects for the zero point outside of a reduction is another.
+          Value extQuantized =
+              convertScalarToDtype(nested, loc, quantized, differenceType,
+                                   /*isUnsignedCast=*/inputUnsigned);
+          Value extZeroPoint =
+              convertScalarToDtype(nested, loc, args[2], differenceType,
+                                   /*isUnsignedCast=*/zpUnsigned);
+          Value difference =
+              arith::SubIOp::create(nested, loc, extQuantized, extZeroPoint);
+          // The difference is signed even when both operands are unsigned.
+          real = arith::SIToFPOp::create(nested, loc, computeType, difference);
+        }
+        Value dequantized = arith::MulFOp::create(nested, loc, real, scale);
+        return convertScalarToDtype(nested, loc, dequantized, realType,
+                                    /*isUnsignedCast=*/false);
+      });
+}
+
+FailureOr<SmallVector<Value>>
+QuantizeAffineOp::decomposeOperation(OpBuilder &b) {
+  // The op specifies its arithmetic in the scale's element type, so the input
+  // is converted to it before the divide rather than the other way around.
+  Type computeType = getScaleElementType();
+  Type storageType = getOutputType().getElementType();
+  bool storageUnsigned = getStorageUnsigned();
+  bool zpUnsigned = getZpUnsigned();
+  bool symmetric = isSymmetric();
+  int64_t quantMin = getQuantMinValue();
+  int64_t quantMax = getQuantMaxValue();
+
+  return buildQuantizationGeneric(
+      *this, b, [&](OpBuilder &nested, Location loc, ValueRange args) -> Value {
+        Value real = convertScalarToDtype(nested, loc, args[0], computeType,
+                                          /*isUnsignedCast=*/false);
+        Value scale = args[1];
+        Value scaled = arith::DivFOp::create(nested, loc, real, scale);
+
+        Value rounded = math::RoundEvenOp::create(nested, loc, scaled);
+
+        Value shifted = rounded;
+        if (!symmetric) {
+          Value zeroPoint =
+              convertScalarToDtype(nested, loc, args[2], computeType,
+                                   /*isUnsignedCast=*/zpUnsigned);
+          shifted = arith::AddFOp::create(nested, loc, rounded, zeroPoint);
+        }
+
+        // Clamp in the float domain, before the conversion. `arith.fptosi` of
+        // a value that does not fit the target integer type is poison, so
+        // converting first and clamping after would be too late for a large
+        // magnitude or an infinity. After the clamp the value is within
+        // [quant_min, quant_max] and the conversion is always defined.
+        //
+        // `maxnumf`/`minnumf` return the other operand when one is NaN, where
+        // `maximumf`/`minimumf` would propagate the NaN into the conversion
+        // and make it poison anyway. A NaN input therefore comes out as
+        // quant_min - an artifact of clamping the lower bound first, not a
+        // choice: ONNX, PyTorch and TFLite all leave NaN here
+        // implementation-defined. What matters is only that it is defined.
+        Value lowerBound = arith::ConstantOp::create(
+            nested, loc,
+            nested.getFloatAttr(computeType, static_cast<double>(quantMin)));
+        Value upperBound = arith::ConstantOp::create(
+            nested, loc,
+            nested.getFloatAttr(computeType, static_cast<double>(quantMax)));
+        Value clamped =
+            arith::MaxNumFOp::create(nested, loc, shifted, lowerBound);
+        clamped = arith::MinNumFOp::create(nested, loc, clamped, upperBound);
+
+        return convertScalarToDtype(nested, loc, clamped, storageType,
+                                    /*isUnsignedCast=*/storageUnsigned);
+      });
+}
+
 } // namespace mlir::iree_compiler::IREE::LinalgExt

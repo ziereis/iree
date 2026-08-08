@@ -1390,6 +1390,287 @@ def IREELinalgExt_ExpReductionOp : IREELinalgExt_Op<"exp_reduction", [
 }
 
 //===----------------------------------------------------------------------===//
+// Affine quantization
+//===----------------------------------------------------------------------===//
+
+class IREELinalgExt_AffineQuantizationOp<string mnemonic, list<Trait> traits = []>
+    : IREELinalgExt_Op<mnemonic, !listconcat(traits, [
+        DeclareOpInterfaceMethods<LinalgFusionInterface,
+          ["getIndexingMapsForOperands", "getIndexingMapsForResults",
+           "getStaticLoopRanges"]>,
+        DeclareOpInterfaceMethods<IndexingMapOpInterface,
+          ["getMatchingIndexingMap"]>,
+        DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface,
+          ["reifyResultShapes"]>,
+        DeclareOpInterfaceMethods<AggregatedOpInterface, ["decomposeOperation"]>,
+        DeclareOpInterfaceMethods<TilingInterface,
+          ["getIterationDomain",
+           "getLoopIteratorTypes",
+           "getResultTilePosition",
+           "getTiledImplementation",
+           "generateResultTileValue"]>])> {
+  code extraAffineQuantizationOpClassDeclaration = extraLinalgExtOpClassDeclaration # [{
+    // Disambiguates the `getIndexingMapsArray` provided by both
+    // LinalgFusionInterface and IndexingMapOpInterface.
+    SmallVector<AffineMap> getIndexingMapsArray();
+
+    // The maps are stored in operand order: input, scale, zero point when
+    // present, then output.
+    AffineMap getInputMap() { return getIndexingMapsArray().front(); }
+    AffineMap getScaleMap() { return getIndexingMapsArray()[1]; }
+    AffineMap getZeroPointMap() {
+      assert(getZeroPoint() && "expected a zero_point operand");
+      return getIndexingMapsArray()[2];
+    }
+    AffineMap getOutputMap() { return getIndexingMapsArray().back(); }
+
+    ShapedType getInputType() {
+      return cast<ShapedType>(getInput().getType());
+    }
+    ShapedType getOutputType() {
+      return cast<ShapedType>(getOutput().getType());
+    }
+    // The quantization parameters may be scalars, so they are described by
+    // rank and element type rather than by a ShapedType.
+    static int64_t getQParamRank(Value qparam) {
+      auto shapedType = dyn_cast<ShapedType>(qparam.getType());
+      return shapedType ? shapedType.getRank() : 0;
+    }
+    int64_t getScaleRank() { return getQParamRank(getScale()); }
+    Type getScaleElementType() {
+      return getElementTypeOrSelf(getScale().getType());
+    }
+    int64_t getRank() {
+      return getInputType().getRank();
+    }
+
+    // The quantization parameters are shared by the whole value.
+    bool isPerTensor() {
+      return getScaleMap().getNumResults() == 0 &&
+             (!getZeroPoint() || getZeroPointMap().getNumResults() == 0);
+    }
+    // No zero point operand, i.e. the zero point is known to be 0.
+    bool isSymmetric() {
+      return !getZeroPoint();
+    }
+
+    // Method to implement for specifying output range for
+    // DestinationStyleOpInterface
+    MutableOperandRange getDpsInitsMutable() {
+      return MutableOperandRange(*this, /*start=*/getZeroPoint() ? 3 : 2,
+                                 /*length=*/1);
+    }
+  }];
+}
+
+def IREELinalgExt_QuantizeAffineOp
+    : IREELinalgExt_AffineQuantizationOp<"quantize_affine"> {
+  let summary = [{Affine (uniform) quantization of a real valued tensor.}];
+  let description = [{
+    Quantizes `input` elementwise, producing an integer `output`:
+
+    ```
+    output[out_map(d)] = clamp(round(input[in_map(d)] / scale[scale_map(d)])
+                                 + extend(zero_point[zp_map(d)]),
+                               quant_min, quant_max)
+    ```
+
+    `round` breaks ties to even, which is what ONNX `QuantizeLinear`, the PT2E
+    `quantize_per_tensor` family and StableHLO `uniform_quantize` all specify.
+    A frontend that needs a different tie-breaking rule would have to add an
+    attribute to select it.
+
+    The arithmetic happens in the element type of `scale`, which need not be
+    the element type of `input`: the input is converted to the scale's type
+    before the divide, and the clamped result is converted to the storage type
+    at the end. Carrying an f32 scale over an f16 value is the common mixed
+    precision case, and is what the PT2E reference decomposition does - it
+    upcasts an f16 or bf16 input to f32 and raises on any other real type. A
+    frontend that instead wants the narrower arithmetic asks for it by handing
+    over a narrower scale.
+
+    There is one entry in `indexing_maps` per operand, in operand order:
+    `input`, `scale`, `zero_point` when present, then `output`. All share an
+    iteration space, which is the index space of the value being quantized.
+
+    The value maps, for `input` and `output`, must be permutations: the op is
+    elementwise, so every value element is read and written exactly once. They
+    are usually the identity, but a non-identity permutation lets a transpose be
+    folded into the op rather than materialized beside it.
+
+    The quantization parameter maps, for `scale` and `zero_point`, are
+    independent projected permutations. Each operand's number of results is
+    its granularity:
+
+    - per-tensor:  `affine_map<(d0, d1) -> ()>`
+    - per-channel: `affine_map<(d0, d1) -> (d0)>`
+    - per-block:   `affine_map<(d0, d1, d2) -> (d0, d1)>` over an input whose
+                   blocked dimension has been expanded, e.g. `MxKxi4` reshaped
+                   to `Mx(K/B)xBxi4`.
+
+    `zero_point` is optional; when absent the quantization is symmetric.
+
+    `quant_min`/`quant_max` are the inclusive clamp bounds in the storage value
+    space, following the PT2E `quantize_per_tensor` convention. They are
+    required because the representable range is frequently not the full range
+    of the storage type (narrow-range `[-127, 127]` weights, sub-byte values
+    packed into a wider storage type).
+
+    Because MLIR integers are signless, `storage_unsigned` and `zp_unsigned`
+    declare how `output` and `zero_point` are to be interpreted. They are
+    independent: unsigned storage with a signed zero point of a wider type is
+    common in ONNX and TFLite importers.
+
+    The addition of the zero point is specified in exact arithmetic; choosing
+    an intermediate width for it is a lowering concern.
+
+    Example:
+
+    ```mlir
+    %q = iree_linalg_ext.quantize_affine
+        {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                          affine_map<(d0, d1) -> (d0)>,
+                          affine_map<(d0, d1) -> (d0)>,
+                          affine_map<(d0, d1) -> (d0, d1)>],
+         quant_min = -128 : i64, quant_max = 127 : i64}
+        ins(%x, %scale, %zp : tensor<128x64xf32>, tensor<128xf32>, tensor<128xi8>)
+        outs(%init : tensor<128x64xi8>) -> tensor<128x64xi8>
+    ```
+  }];
+
+  let arguments = (ins
+      AnyShaped:$input,
+      AnyShapedOrScalarType:$scale,
+      Optional<AnyShapedOrScalarType>:$zero_point,
+      AnyShaped:$output,
+      AffineMapArrayAttr:$indexing_maps,
+      I64Attr:$quant_min,
+      I64Attr:$quant_max,
+      UnitAttr:$storage_unsigned,
+      UnitAttr:$zp_unsigned
+  );
+  let results = (outs Variadic<AnyRankedTensor>:$result);
+
+  let assemblyFormat = [{
+    attr-dict
+    `ins` `(` $input `,` $scale (`,` $zero_point^)? `:`
+              type($input) `,` type($scale) (`,` type($zero_point)^)? `)`
+    `outs` `(` $output `:` type($output) `)`
+    (`->` type($result)^)?
+  }];
+
+  let extraClassDeclaration = extraAffineQuantizationOpClassDeclaration # [{
+    // The clamp bounds are signed, but the accessor ODS generates for an
+    // `I64Attr` returns them zero extended. Always read them through these.
+    int64_t getQuantMinValue() { return getQuantMinAttr().getInt(); }
+    int64_t getQuantMaxValue() { return getQuantMaxAttr().getInt(); }
+  }];
+}
+
+def IREELinalgExt_DequantizeAffineOp
+    : IREELinalgExt_AffineQuantizationOp<"dequantize_affine"> {
+  let summary = [{Affine (uniform) dequantization of an integer tensor.}];
+  let description = [{
+    Dequantizes `input` elementwise, producing a real valued `output`:
+
+    ```
+    output[out_map(d)] = (extend(input[in_map(d)])
+                            - extend(zero_point[zp_map(d)]))
+                           * scale[scale_map(d)]
+    ```
+
+    See `iree_linalg_ext.quantize_affine` for the meaning of `indexing_maps` and
+    of the signedness attributes; here `input_unsigned` refers to the quantized
+    operand, which is the input rather than the output.
+
+    As in `quantize_affine`, the arithmetic happens in the element type of
+    `scale`: the multiply is performed there and the product is converted to
+    the element type of `output` afterwards.
+
+    The subtraction of the zero point is specified in exact arithmetic: the
+    difference is computed as if in unbounded integers, then converted to the
+    element type of `scale`. Fixing an intermediate width is deliberately left
+    to the lowering, so that a consumer is free to keep the raw integer values
+    and apply the zero point correction outside of a reduction instead.
+
+    The zero point is required to be a point on the quantized grid: its values
+    must be representable in the element type of `input`, even where its own
+    element type is wider. Every frontend guarantees this: ONNX requires the
+    zero point to have the same type as the quantized tensor, PT2E constrains
+    it to `[quant_min, quant_max]`, and a `!quant.uniform` type carries it as a
+    field of the storage type. A wider zero point element type is therefore
+    accepted (PT2E emits `i64` zero points for `i8` data) but carries no extra
+    information.
+
+    That invariant is what makes the subtraction width depend only on the
+    storage type: `getZeroPointDifferenceType` returns
+    `PowerOf2Ceil(storage_width + 1)`, so `i8` data subtracts in `i16`
+    regardless of whether the zero point is `i8`, `i32` or `i64`. It is
+    verified for a constant zero point; for a dynamic one it is the producer's
+    contract, and a violation is a miscompile rather than a diagnostic.
+
+    `quant_min`/`quant_max` do not affect the result. They are optional range
+    metadata, carried so that a Q/DQ pair imported from PT2E round trips, and
+    so that consumers can bound the input values without re-deriving them from
+    the storage type.
+
+    Example:
+
+    ```mlir
+    %dq = iree_linalg_ext.dequantize_affine
+        {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                          affine_map<(d0, d1) -> (d0)>,
+                          affine_map<(d0, d1) -> (d0)>,
+                          affine_map<(d0, d1) -> (d0, d1)>],
+         input_unsigned}
+        ins(%q, %scale, %zp : tensor<128x64xi8>, tensor<128xf32>, tensor<128xi32>)
+        outs(%init : tensor<128x64xf32>) -> tensor<128x64xf32>
+    ```
+  }];
+
+  let arguments = (ins
+      AnyShaped:$input,
+      AnyShapedOrScalarType:$scale,
+      Optional<AnyShapedOrScalarType>:$zero_point,
+      AnyShaped:$output,
+      AffineMapArrayAttr:$indexing_maps,
+      OptionalAttr<I64Attr>:$quant_min,
+      OptionalAttr<I64Attr>:$quant_max,
+      UnitAttr:$input_unsigned,
+      UnitAttr:$zp_unsigned
+  );
+  let results = (outs Variadic<AnyRankedTensor>:$result);
+
+  let assemblyFormat = [{
+    attr-dict
+    `ins` `(` $input `,` $scale (`,` $zero_point^)? `:`
+              type($input) `,` type($scale) (`,` type($zero_point)^)? `)`
+    `outs` `(` $output `:` type($output) `)`
+    (`->` type($result)^)?
+  }];
+
+  let extraClassDeclaration = extraAffineQuantizationOpClassDeclaration # [{
+    // The integer type in which `input - zero_point` is computed. Requires a
+    // zero point operand. Returns std::nullopt when the difference would need
+    // more than 64 bits, which the verifier rejects, so a caller that has
+    // verified IR can dereference the result.
+    std::optional<IntegerType> getZeroPointDifferenceType();
+
+    // See the note on the same helpers in `quantize_affine`: the generated
+    // accessors zero extend, which would turn a negative bound into a huge
+    // positive one.
+    std::optional<int64_t> getQuantMinValue() {
+      IntegerAttr attr = getQuantMinAttr();
+      return attr ? std::optional<int64_t>(attr.getInt()) : std::nullopt;
+    }
+    std::optional<int64_t> getQuantMaxValue() {
+      IntegerAttr attr = getQuantMaxAttr();
+      return attr ? std::optional<int64_t>(attr.getInt()) : std::nullopt;
+    }
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Im2col
 //===----------------------------------------------------------------------===//
 

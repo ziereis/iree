@@ -2514,6 +2514,127 @@ ExpReductionOp::generateResultTileValue(OpBuilder &b, unsigned resultNumber,
 }
 
 //===----------------------------------------------------------------------===//
+// QuantizeAffineOp and DequantizeAffineOp
+//===----------------------------------------------------------------------===//
+
+/// The iteration space of an affine quantization op is the index space of the
+/// value being (de)quantized, and every dimension is parallel. The input map
+/// names the input dimension each iteration dim reads, which is what bounds it.
+template <typename OpTy>
+static SmallVector<Range> getQuantizationIterationDomain(OpTy op,
+                                                         OpBuilder &b) {
+  Location loc = op.getLoc();
+  OpFoldResult zero = b.getIndexAttr(0);
+  OpFoldResult one = b.getIndexAttr(1);
+  SmallVector<Range> domain(op.getRank());
+  for (auto [inputDim, expr] : llvm::enumerate(op.getInputMap().getResults())) {
+    unsigned iterationDim = cast<AffineDimExpr>(expr).getPosition();
+    domain[iterationDim] =
+        Range{zero, getDim(b, loc, op.getInput(), inputDim), one};
+  }
+  return domain;
+}
+
+/// Tiles an affine quantization op by slicing every operand with its indexing
+/// map. The quantization parameter operands are sliced by their own map, so a
+/// per-channel op keeps only the slice of the scales that the tile needs.
+template <typename OpTy>
+static FailureOr<TilingResult>
+getQuantizationTiledImplementation(OpTy op, OpBuilder &b,
+                                   ArrayRef<OpFoldResult> offsets,
+                                   ArrayRef<OpFoldResult> sizes) {
+  Location loc = op.getLoc();
+  auto indexingMapOp = cast<IndexingMapOpInterface>(op.getOperation());
+  SmallVector<Value> tiledOperands;
+  SmallVector<Operation *> generatedSlices;
+  for (OpOperand &opOperand : op.getOperation()->getOpOperands()) {
+    // A scalar quantization parameter has nothing to slice; it is invariant
+    // over the whole iteration space and is passed through as is.
+    if (!isa<ShapedType>(opOperand.get().getType())) {
+      tiledOperands.push_back(opOperand.get());
+      continue;
+    }
+    AffineMap map = indexingMapOp.getMatchingIndexingMap(&opOperand);
+    SmallVector<Range> slice = getPermutedRange(map, offsets, sizes);
+    Operation *sliceOp = getSlice(b, loc, opOperand.get(), slice);
+    tiledOperands.push_back(sliceOp->getResult(0));
+    generatedSlices.push_back(sliceOp);
+  }
+
+  SmallVector<Type> resultTypes;
+  if (op->getNumResults()) {
+    resultTypes.push_back(tiledOperands.back().getType());
+  }
+  Operation *tiledOp = mlir::clone(b, op, resultTypes, tiledOperands);
+  return TilingResult{
+      {tiledOp}, SmallVector<Value>(tiledOp->getResults()), generatedSlices};
+}
+
+/// The result is indexed by a permutation of the iteration space, so the result
+/// tile is the iteration tile with its dimensions reordered to match.
+template <typename OpTy>
+static LogicalResult
+getQuantizationResultTilePosition(OpTy op, ArrayRef<OpFoldResult> offsets,
+                                  ArrayRef<OpFoldResult> sizes,
+                                  SmallVector<OpFoldResult> &resultOffsets,
+                                  SmallVector<OpFoldResult> &resultSizes) {
+  AffineMap outputMap = op.getOutputMap();
+  resultOffsets = applyPermutationMap(outputMap, offsets);
+  resultSizes = applyPermutationMap(outputMap, sizes);
+  return success();
+}
+
+/// Defines the TilingInterface methods for one affine quantization op. The
+/// overloads taking an inner tile alignment forward to the ones without it,
+/// since only linalg.pack/unpack use that parameter.
+#define DEFINE_AFFINE_QUANTIZATION_OP_TILING_METHODS(OP_NAME)                  \
+  SmallVector<utils::IteratorType> OP_NAME::getLoopIteratorTypes() {           \
+    return SmallVector<utils::IteratorType>(getRank(),                         \
+                                            utils::IteratorType::parallel);    \
+  }                                                                            \
+                                                                               \
+  SmallVector<Range> OP_NAME::getIterationDomain(OpBuilder &b) {               \
+    return getQuantizationIterationDomain(*this, b);                           \
+  }                                                                            \
+                                                                               \
+  FailureOr<TilingResult> OP_NAME::getTiledImplementation(                     \
+      OpBuilder &b, ArrayRef<OpFoldResult> offsets,                            \
+      ArrayRef<OpFoldResult> sizes) {                                          \
+    return getQuantizationTiledImplementation(*this, b, offsets, sizes);       \
+  }                                                                            \
+                                                                               \
+  LogicalResult OP_NAME::getResultTilePosition(                                \
+      OpBuilder &b, unsigned resultNumber, ArrayRef<OpFoldResult> offsets,     \
+      ArrayRef<OpFoldResult> sizes, SmallVector<OpFoldResult> &resultOffsets,  \
+      SmallVector<OpFoldResult> &resultSizes) {                                \
+    return getQuantizationResultTilePosition(*this, offsets, sizes,            \
+                                             resultOffsets, resultSizes);      \
+  }                                                                            \
+                                                                               \
+  FailureOr<TilingResult> OP_NAME::generateResultTileValue(                    \
+      OpBuilder &b, unsigned resultNumber, ArrayRef<OpFoldResult> offsets,     \
+      ArrayRef<OpFoldResult> sizes) {                                          \
+    return getTiledImplementation(b, offsets, sizes);                          \
+  }                                                                            \
+                                                                               \
+  FailureOr<TilingResult> OP_NAME::getTiledImplementation(                     \
+      OpBuilder &b, ArrayRef<OpFoldResult> offsets,                            \
+      ArrayRef<OpFoldResult> sizes, ArrayRef<mlir::InnerTileAlignment>) {      \
+    return getTiledImplementation(b, offsets, sizes);                          \
+  }                                                                            \
+                                                                               \
+  FailureOr<TilingResult> OP_NAME::generateResultTileValue(                    \
+      OpBuilder &b, unsigned resultNumber, ArrayRef<OpFoldResult> offsets,     \
+      ArrayRef<OpFoldResult> sizes, ArrayRef<mlir::InnerTileAlignment>) {      \
+    return generateResultTileValue(b, resultNumber, offsets, sizes);           \
+  }
+
+DEFINE_AFFINE_QUANTIZATION_OP_TILING_METHODS(QuantizeAffineOp)
+DEFINE_AFFINE_QUANTIZATION_OP_TILING_METHODS(DequantizeAffineOp)
+
+#undef DEFINE_AFFINE_QUANTIZATION_OP_TILING_METHODS
+
+//===----------------------------------------------------------------------===//
 // Im2colOp
 //===----------------------------------------------------------------------===//
 
