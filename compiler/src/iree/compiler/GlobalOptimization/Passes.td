@@ -101,6 +101,21 @@ def ExpandTensorShapesPass :
   let summary = "Expands tensor shape dimensions into SSA values across the program.";
 }
 
+def ConvertQDQToIntegerMathPass :
+    InterfacePass<"iree-global-opt-convert-qdq-to-integer-math", "mlir::FunctionOpInterface"> {
+  let summary = "Rewrites contractions over dequantized operands into integer contractions.";
+  let description = [{
+    Matches a contraction or convolution whose inputs are produced by
+    `iree_linalg_ext.dequantize_affine` and rewrites it into an integer
+    contraction plus a zero point correction epilogue:
+
+      C = sA*sB*(D - zB*RA - zA*RB + N*zA*zB)
+
+    Applies when no quantization parameter varies along a reduction dimension.
+    Anything else keeps the floating point path, which stays correct.
+  }];
+}
+
 def FuseDequantizationMatmulPass:
     InterfacePass<"iree-global-opt-fuse-dequantization-matmul", "mlir::FunctionOpInterface"> {
   let summary = "Fuses dequantization and matmul linalg.generic ops.";

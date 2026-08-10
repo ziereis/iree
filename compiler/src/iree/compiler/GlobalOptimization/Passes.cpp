@@ -5,6 +5,7 @@
 
 #include "iree/compiler/GlobalOptimization/Passes.h"
 #include "iree/compiler/Dialect/Flow/Transforms/Passes.h"
+#include "iree/compiler/Dialect/LinalgExt/Transforms/Passes.h"
 #include "iree/compiler/Dialect/TensorExt/IR/TensorExtDialect.h"
 #include "iree/compiler/Dialect/Util/Transforms/Passes.h"
 #include "iree/compiler/DispatchCreation/Passes.h"
@@ -24,6 +25,11 @@ static llvm::cl::opt<bool> clEnableQuantizedMatmulReassociation(
     llvm::cl::desc(
         "Enables reassociation of quantized matmul ops (experimental)."),
     llvm::cl::init(false));
+static llvm::cl::opt<bool> clConvertQDQToIntegerMath(
+    "iree-global-opt-enable-qdq-to-integer-math",
+    llvm::cl::desc("Rewrites contractions over dequantized operands into "
+                   "integer contractions with zero point corrections."),
+    llvm::cl::init(true));
 static llvm::cl::opt<bool> clEnableTransposePropagation(
     "iree-global-opt-propagate-transposes",
     llvm::cl::desc(
@@ -200,6 +206,23 @@ void buildGlobalOptimizationPassPipeline(
                                clEnableEdgeReshapePropagation;
                            return createPropagateLinalgTransposePass(options);
                          })
+      // Turn dequantize -> contraction into an integer contraction. This
+      // requires the dequantize to be the contraction's immediate producer, so
+      // it runs after the passes that move reshapes and transposes out from
+      // between the two, and before encoding selection so that the integer form
+      // is what data tiling sees.
+      .addPredicatedPass(clConvertQDQToIntegerMath,
+                         createConvertQDQToIntegerMathPass)
+      // Anything the rewrite declined, or that never fed a contraction, still
+      // has to lower. Decompose it into the equivalent elementwise arithmetic.
+      // Unconditional: without this, disabling the rewrite would leave
+      // quantization ops with no lowering at all.
+      .addPass([&]() {
+        IREE::LinalgExt::DecomposeAggregatedOpPassOptions options;
+        options.filterOps = "iree_linalg_ext.quantize_affine,"
+                            "iree_linalg_ext.dequantize_affine";
+        return IREE::LinalgExt::createDecomposeAggregatedOpPass(options);
+      })
       .addPass(IREE::Flow::createCanonicalizePass)
       .addPass(mlir::createCSEPass);
   mainPassManager.addPass(
