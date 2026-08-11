@@ -846,3 +846,84 @@ util.func public @gather_collapse_source(%arg0: tensor<10x10x4x32xf16>, %arg1: t
 //  CHECK-SAME:       ins(%[[EXPANDED0]], %[[ARG1]]
 //  CHECK-SAME:       outs(%[[EXPANDED1]]
 //       CHECK:   tensor.collapse_shape %[[GATHER]] {{.*}} tensor<10x4x32xf16> into tensor<10x128xf16>
+
+// -----
+
+// A collapse_shape feeding a per-channel dequantize bubbles up: the op's
+// iteration space is expanded to the uncollapsed rank, and the scale, which is
+// indexed by the collapsed dimension, is expanded alongside it.
+util.func public @dequantize_collapse_input(%bq: tensor<4x8x64xi8>, %sb: tensor<32xf32>) -> tensor<32x64xf32> {
+  %collapsed = tensor.collapse_shape %bq [[0, 1], [2]] : tensor<4x8x64xi8> into tensor<32x64xi8>
+  %init = tensor.empty() : tensor<32x64xf32>
+  %dq = iree_linalg_ext.dequantize_affine
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0)>,
+                        affine_map<(d0, d1) -> (d0, d1)>]}
+      ins(%collapsed, %sb : tensor<32x64xi8>, tensor<32xf32>)
+      outs(%init : tensor<32x64xf32>) -> tensor<32x64xf32>
+  util.return %dq : tensor<32x64xf32>
+}
+// CHECK-LABEL: util.func public @dequantize_collapse_input
+//  CHECK-SAME:     %[[ARG0:[a-zA-Z0-9]+]]:
+//  CHECK-SAME:     %[[ARG1:[a-zA-Z0-9]+]]:
+//   CHECK-DAG:   %[[SCALE:.+]] = tensor.expand_shape %[[ARG1]] {{.+}} tensor<32xf32> into tensor<4x8xf32>
+//       CHECK:   %[[DQ:.+]] = iree_linalg_ext.dequantize_affine
+//  CHECK-SAME:       indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+//  CHECK-SAME:                        affine_map<(d0, d1, d2) -> (d0, d1)>
+//  CHECK-SAME:                        affine_map<(d0, d1, d2) -> (d0, d1, d2)>]
+//  CHECK-SAME:       ins(%[[ARG0]], %[[SCALE]] : tensor<4x8x64xi8>, tensor<4x8xf32>)
+//       CHECK:   tensor.collapse_shape %[[DQ]] {{.*}} tensor<4x8x64xf32> into tensor<32x64xf32>
+
+// -----
+
+// An expand_shape consuming a quantize result bubbles up above it, so the
+// quantize is left working on the expanded shape and no reshape remains on its
+// result. The zero point is per-tensor, so it is untouched.
+util.func public @quantize_expand_result(%x: tensor<32x64xf32>, %s: tensor<32xf32>,
+    %z: tensor<32xi8>) -> tensor<4x8x64xi8> {
+  %init = tensor.empty() : tensor<32x64xi8>
+  %q = iree_linalg_ext.quantize_affine
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0)>,
+                        affine_map<(d0, d1) -> (d0)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       quant_min = -128 : i64, quant_max = 127 : i64}
+      ins(%x, %s, %z : tensor<32x64xf32>, tensor<32xf32>, tensor<32xi8>)
+      outs(%init : tensor<32x64xi8>) -> tensor<32x64xi8>
+  %expanded = tensor.expand_shape %q [[0, 1], [2]] output_shape [4, 8, 64] : tensor<32x64xi8> into tensor<4x8x64xi8>
+  util.return %expanded : tensor<4x8x64xi8>
+}
+// CHECK-LABEL: util.func public @quantize_expand_result
+//  CHECK-SAME:     %[[ARG0:[a-zA-Z0-9]+]]:
+//  CHECK-SAME:     %[[ARG1:[a-zA-Z0-9]+]]:
+//  CHECK-SAME:     %[[ARG2:[a-zA-Z0-9]+]]:
+//   CHECK-DAG:   %[[INPUT:.+]] = tensor.expand_shape %[[ARG0]] {{.+}} tensor<32x64xf32> into tensor<4x8x64xf32>
+//   CHECK-DAG:   %[[SCALE:.+]] = tensor.expand_shape %[[ARG1]] {{.+}} tensor<32xf32> into tensor<4x8xf32>
+//   CHECK-DAG:   %[[ZP:.+]] = tensor.expand_shape %[[ARG2]] {{.+}} tensor<32xi8> into tensor<4x8xi8>
+//       CHECK:   %[[Q:.+]] = iree_linalg_ext.quantize_affine
+//  CHECK-SAME:       ins(%[[INPUT]], %[[SCALE]], %[[ZP]] :
+//   CHECK-NOT:   tensor.expand_shape
+//       CHECK:   util.return %[[Q]]
+
+// -----
+
+// A scalar quantization parameter is invariant over the whole iteration space,
+// so expanding the op leaves it alone.
+util.func public @dequantize_scalar_qparam_collapse_input(%bq: tensor<4x8x64xi8>, %sb: f32)
+    -> tensor<32x64xf32> {
+  %collapsed = tensor.collapse_shape %bq [[0, 1], [2]] : tensor<4x8x64xi8> into tensor<32x64xi8>
+  %init = tensor.empty() : tensor<32x64xf32>
+  %dq = iree_linalg_ext.dequantize_affine
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> ()>,
+                        affine_map<(d0, d1) -> (d0, d1)>]}
+      ins(%collapsed, %sb : tensor<32x64xi8>, f32)
+      outs(%init : tensor<32x64xf32>) -> tensor<32x64xf32>
+  util.return %dq : tensor<32x64xf32>
+}
+// CHECK-LABEL: util.func public @dequantize_scalar_qparam_collapse_input
+//  CHECK-SAME:     %[[ARG0:[a-zA-Z0-9]+]]:
+//  CHECK-SAME:     %[[ARG1:[a-zA-Z0-9]+]]:
+//       CHECK:   %[[DQ:.+]] = iree_linalg_ext.dequantize_affine
+//  CHECK-SAME:       ins(%[[ARG0]], %[[ARG1]] : tensor<4x8x64xi8>, f32)
+//       CHECK:   tensor.collapse_shape %[[DQ]] {{.*}} tensor<4x8x64xf32> into tensor<32x64xf32>
