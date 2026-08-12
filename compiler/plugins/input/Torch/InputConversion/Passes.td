@@ -24,6 +24,18 @@ def ConvertTMTensorToLinalgExtPass :
   let summary = "Convert from TMTensor ops to LinalgExt ops on tensors";
 }
 
+def ConvertTorchQuantizationToLinalgExtPass :
+    InterfacePass<"torch-iree-torch-quantization-to-linalg-ext", "mlir::FunctionOpInterface"> {
+  let summary = "Convert PT2E quantization ops to LinalgExt affine quantization ops";
+  let description = [{
+    Converts the `quantized_decomposed.{,de}quantize_per_tensor` and
+    `..._per_channel` ops of PT2E exported graphs into
+    `iree_linalg_ext.quantize_affine` and `dequantize_affine`. Runs ahead of the
+    Torch to Linalg conversion so that the quantization stays named rather than
+    being expanded into elementwise generics.
+  }];
+}
+
 def ConvertTorchUnstructuredToLinalgExtPass :
     InterfacePass<"torch-iree-torch-unstructured-to-linalg-ext", "mlir::FunctionOpInterface"> {
   let summary = "Convert unstructured Torch ops to LinalgExt ops";

@@ -24,6 +24,7 @@ iree_lit_test_suite(
             "auto_input_conversion_with_transients.mlir",
             "bind_symbolic_shapes.mlir",
             "bitcast_tensor.mlir",
+            "convert_torch_quantization_to_linalg_ext.mlir",
             "func_conversion.mlir",
             "func_conversion_invalid.mlir",
             "func_conversion_sync.mlir",
