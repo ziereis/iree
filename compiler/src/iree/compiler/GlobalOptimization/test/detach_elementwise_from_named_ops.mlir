@@ -122,6 +122,54 @@ util.func public @depthwise_conv(%arg0: tensor<1x96x62x62xf32>, %arg1: tensor<96
 
 // -----
 
+util.func public @grouped_conv_reshaped_bias(%input: tensor<1x4x8x34x34xf32>, %filter: tensor<4x8x8x3x3xf32>, %bias: tensor<32xf32>) -> tensor<1x4x8x32x32xf32> {
+  %init = tensor.empty() : tensor<1x32x32x32xf32>
+  %broadcasted = linalg.broadcast ins(%bias : tensor<32xf32>) outs(%init : tensor<1x32x32x32xf32>) dimensions = [0, 2, 3]
+  %expanded = tensor.expand_shape %broadcasted [[0], [1, 2], [3], [4]] output_shape [1, 4, 8, 32, 32] : tensor<1x32x32x32xf32> into tensor<1x4x8x32x32xf32>
+  %conv = linalg.conv_2d_ngchw_gfchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>}
+      ins(%input, %filter : tensor<1x4x8x34x34xf32>, tensor<4x8x8x3x3xf32>)
+      outs(%expanded : tensor<1x4x8x32x32xf32>) -> tensor<1x4x8x32x32xf32>
+  util.return %conv : tensor<1x4x8x32x32xf32>
+}
+
+// A reshape between the init and its producer hides what the init really is. A
+// grouped convolution always has one, because its channel dim is split into
+// (group, channel) above the contraction while the bias was broadcast at the
+// unsplit rank.
+// CHECK-LABEL: util.func public @grouped_conv_reshaped_bias
+//  CHECK-SAME: (%[[INPUT:.+]]: tensor<1x4x8x34x34xf32>, %[[FILTER:.+]]: tensor<4x8x8x3x3xf32>, %[[BIAS:.+]]: tensor<32xf32>)
+//       CHECK:   %[[BROADCAST:.+]] = linalg.broadcast
+//  CHECK-SAME:     ins(%[[BIAS]] :
+//       CHECK:   %[[EXPANDED:.+]] = tensor.expand_shape %[[BROADCAST]]
+//       CHECK:   %[[FILL:.+]] = linalg.fill
+//       CHECK:   %[[CONV:.+]] = linalg.conv_2d_ngchw_gfchw
+//  CHECK-SAME:     ins(%[[INPUT]], %[[FILTER]]
+//  CHECK-SAME:     outs(%[[FILL]]
+// The trailing add reads the init operand itself, reshape included.
+//       CHECK:   linalg.generic
+//  CHECK-SAME:     ins(%[[CONV]], %[[EXPANDED]]
+//  CHECK-SAME:     outs(%[[FILL]]
+
+// -----
+
+util.func public @keep_reshaped_fill(%input: tensor<1x4x8x34x34xf32>, %filter: tensor<4x8x8x3x3xf32>) -> tensor<1x4x8x32x32xf32> {
+  %cst = arith.constant 0.0 : f32
+  %init = tensor.empty() : tensor<1x32x32x32xf32>
+  %fill = linalg.fill ins(%cst : f32) outs(%init : tensor<1x32x32x32xf32>) -> tensor<1x32x32x32xf32>
+  %expanded = tensor.expand_shape %fill [[0], [1, 2], [3], [4]] output_shape [1, 4, 8, 32, 32] : tensor<1x32x32x32xf32> into tensor<1x4x8x32x32xf32>
+  %conv = linalg.conv_2d_ngchw_gfchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>}
+      ins(%input, %filter : tensor<1x4x8x34x34xf32>, tensor<4x8x8x3x3xf32>)
+      outs(%expanded : tensor<1x4x8x32x32xf32>) -> tensor<1x4x8x32x32xf32>
+  util.return %conv : tensor<1x4x8x32x32xf32>
+}
+
+// Walking the reshape has to find a fill and leave it alone, otherwise every
+// reshaped zero init grows a redundant fill and add.
+// CHECK-LABEL: util.func public @keep_reshaped_fill
+//   CHECK-NOT: linalg.generic
+
+// -----
+
 util.func public @keep_fill(%arg0 : tensor<?x?xf32>, %arg1 : tensor<?x?xf32>) -> tensor<?x?xf32> {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index

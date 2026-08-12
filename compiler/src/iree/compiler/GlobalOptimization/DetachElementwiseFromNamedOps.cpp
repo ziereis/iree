@@ -63,7 +63,17 @@ struct DetachElementwisePattern : OpInterfaceRewritePattern<linalg::LinalgOp> {
     // operations. This later gets converted to a writable buffer. Here we
     // detach the constant from the init argument to avoid this.
     // Splat constant are handled later by DetachSplatConstantOutsOperands.
+    // Classify the init by what really produces it, looking through reshapes.
+    // A reshape hides the producer without changing what the values are, and a
+    // grouped convolution arrives with one: its channel dim is split into
+    // (group, channel) above the contraction, while the bias it accumulates
+    // into was broadcast at the unsplit rank. Only the classification walks the
+    // reshapes; the trailing add still reads the init operand itself.
     Operation *outsDefiningOp = outputOperand.getDefiningOp();
+    while (isa_and_present<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(
+        outsDefiningOp)) {
+      outsDefiningOp = outsDefiningOp->getOperand(0).getDefiningOp();
+    }
     bool isNonSplatConstant = false;
     if (auto constOp = dyn_cast_or_null<arith::ConstantOp>(outsDefiningOp)) {
       auto elementsAttr = dyn_cast<ElementsAttr>(constOp.getValue());
