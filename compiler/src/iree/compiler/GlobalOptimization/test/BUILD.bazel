@@ -17,6 +17,7 @@ iree_lit_test_suite(
     srcs = enforce_glob(
         # keep sorted
         [
+            "bubble_up_through_quantization.mlir",
             "cleanup_numeric_narrowing.mlir",
             "conv2d_to_img2col.mlir",
             "convert_qdq_to_integer_math_algebra.mlir",

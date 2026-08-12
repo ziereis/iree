@@ -43,6 +43,7 @@ iree_cc_library(
     "CleanupNumericNarrowing.cpp"
     "ConvertBatchMatmulToMatmul.cpp"
     "ConvertConv2DToImg2Col.cpp"
+    "BubbleUpThroughQuantization.cpp"
     "ConvertQDQToIntegerMath.cpp"
     "ConvertStridedContractionToContraction.cpp"
     "DataLayoutPropagation.cpp"

@@ -206,6 +206,11 @@ void buildGlobalOptimizationPassPipeline(
                                clEnableEdgeReshapePropagation;
                            return createPropagateLinalgTransposePass(options);
                          })
+      // Establish the adjacency the rewrite below matches on, rather than
+      // relying on the general purpose propagation passes to have gotten there
+      // first.
+      .addPredicatedPass(clConvertQDQToIntegerMath,
+                         createBubbleUpThroughQuantizationPass)
       // Turn dequantize -> contraction into an integer contraction. This
       // requires the dequantize to be the contraction's immediate producer, so
       // it runs after the passes that move reshapes and transposes out from

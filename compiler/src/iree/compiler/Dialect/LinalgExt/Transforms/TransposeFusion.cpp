@@ -18,16 +18,17 @@ namespace mlir::iree_compiler::IREE::LinalgExt {
 
 namespace {
 
-template <typename AttentionOpType>
-struct FuseTransposeWithAttentionLikeOp final
-    : OpRewritePattern<AttentionOpType> {
-  FuseTransposeWithAttentionLikeOp(MLIRContext *context,
-                                   linalg::ControlFusionFn controlFn,
-                                   PatternBenefit benefit = 1)
-      : OpRewritePattern<AttentionOpType>(context, benefit),
-        controlFn(controlFn) {}
+/// Composes a transpose-like producer of one of `op`'s inputs into that
+/// operand's indexing map. Needs only the indexing maps and the DPS inputs, so
+/// it applies to any op that states a map per operand.
+template <typename OpTy>
+struct FuseTransposeWithMappedOperandsOp final : OpRewritePattern<OpTy> {
+  FuseTransposeWithMappedOperandsOp(MLIRContext *context,
+                                    linalg::ControlFusionFn controlFn,
+                                    PatternBenefit benefit = 1)
+      : OpRewritePattern<OpTy>(context, benefit), controlFn(controlFn) {}
 
-  LogicalResult matchAndRewrite(AttentionOpType attentionOp,
+  LogicalResult matchAndRewrite(OpTy attentionOp,
                                 PatternRewriter &rewriter) const override {
     OpOperand *operand = nullptr;
     linalg::LinalgOp producer;
@@ -179,8 +180,10 @@ private:
 void populateFuseLinalgExtOpsWithTransposes(
     RewritePatternSet &patterns,
     const linalg::ControlFusionFn &controlFusionFn) {
-  patterns.add<FuseTransposeWithAttentionLikeOp<AttentionOp>,
-               FuseTransposeWithAttentionLikeOp<OnlineAttentionOp>>(
+  patterns.add<FuseTransposeWithMappedOperandsOp<AttentionOp>,
+               FuseTransposeWithMappedOperandsOp<OnlineAttentionOp>,
+               FuseTransposeWithMappedOperandsOp<QuantizeAffineOp>,
+               FuseTransposeWithMappedOperandsOp<DequantizeAffineOp>>(
       patterns.getContext(), controlFusionFn);
 }
 

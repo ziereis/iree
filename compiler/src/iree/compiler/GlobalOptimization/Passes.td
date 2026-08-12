@@ -101,6 +101,18 @@ def ExpandTensorShapesPass :
   let summary = "Expands tensor shape dimensions into SSA values across the program.";
 }
 
+def BubbleUpThroughQuantizationPass :
+    InterfacePass<"iree-global-opt-bubble-up-through-quantization", "mlir::FunctionOpInterface"> {
+  let summary = "Moves reshapes, transposes and pads out from between quantization ops and their consumers.";
+  let description = [{
+    Bubbles `tensor.expand_shape`, `tensor.collapse_shape`, `linalg.transpose`
+    and `tensor.pad` past `iree_linalg_ext.quantize_affine` and
+    `dequantize_affine`, so that a dequantize feeding a contraction is that
+    contraction's immediate producer. Establishes the precondition that
+    `iree-global-opt-convert-qdq-to-integer-math` matches on.
+  }];
+}
+
 def ConvertQDQToIntegerMathPass :
     InterfacePass<"iree-global-opt-convert-qdq-to-integer-math", "mlir::FunctionOpInterface"> {
   let summary = "Rewrites contractions over dequantized operands into integer contractions.";
