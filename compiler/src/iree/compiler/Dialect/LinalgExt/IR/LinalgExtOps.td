@@ -1409,6 +1409,10 @@ class IREELinalgExt_AffineQuantizationOp<string mnemonic, list<Trait> traits = [
            "getResultTilePosition",
            "getTiledImplementation",
            "generateResultTileValue"]>])> {
+  // A zero point that is provably zero is dropped, which is what makes the
+  // symmetric form recognizable.
+  let hasCanonicalizer = 1;
+
   code extraAffineQuantizationOpClassDeclaration = extraLinalgExtOpClassDeclaration # [{
     // Disambiguates the `getIndexingMapsArray` provided by both
     // LinalgFusionInterface and IndexingMapOpInterface.

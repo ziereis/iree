@@ -32,7 +32,10 @@
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinDialect.h"
+#include "mlir/IR/DialectResourceBlobManager.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectResourceBlobManager.h"
@@ -2609,6 +2612,101 @@ LogicalResult DequantizeAffineOp::verify() {
                                    *quantMax, getInputUnsigned());
   }
   return success();
+}
+
+namespace {
+
+/// True when `value` is an integer constant that is zero in every element.
+///
+/// A frozen model's quantization parameters arrive as resource blobs rather than
+/// inline attributes, so those have to be handled too. For an integer tensor,
+/// being zero everywhere is the same as having all bytes zero, whatever the
+/// element width, so the blob needs no per-width decoding. Padding bytes can
+/// only make the answer a conservative no.
+static bool isKnownZero(Value value) {
+  Attribute constant;
+  if (!matchPattern(value, m_Constant(&constant))) {
+    return false;
+  }
+  if (auto intAttr = dyn_cast<IntegerAttr>(constant)) {
+    return intAttr.getValue().isZero();
+  }
+  auto elements = dyn_cast<ElementsAttr>(constant);
+  if (!elements || !elements.getElementType().isInteger()) {
+    return false;
+  }
+  if (auto resource = dyn_cast<DenseResourceElementsAttr>(constant)) {
+    const AsmResourceBlob *blob = resource.getRawHandle().getBlob();
+    return blob && llvm::all_of(blob->getData(),
+                                [](char byte) { return byte == 0; });
+  }
+  if (elements.isSplat()) {
+    return elements.getSplatValue<APInt>().isZero();
+  }
+  auto values = elements.tryGetValues<APInt>();
+  if (!values) {
+    return false;
+  }
+  return llvm::all_of(*values, [](const APInt &v) { return v.isZero(); });
+}
+
+/// Drops a zero point that is known to be zero. The ops treat a missing zero
+/// point as symmetric, and adding or subtracting zero changes nothing, so the
+/// operand and its indexing map go away. This is what lets the symmetric
+/// weights that quantizers emit as an explicit tensor of zeros be recognized as
+/// symmetric, which in turn removes a correction term from anything downstream
+/// that reads the op.
+template <typename OpTy>
+struct DropZeroZeroPoint : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    Value zeroPoint = op.getZeroPoint();
+    if (!zeroPoint) {
+      return rewriter.notifyMatchFailure(op, "already symmetric");
+    }
+    if (!isKnownZero(zeroPoint)) {
+      return rewriter.notifyMatchFailure(op, "zero point is not known to be 0");
+    }
+
+    SmallVector<Value> operands = op->getOperands();
+    operands.erase(operands.begin() + 2);
+    SmallVector<AffineMap> maps = op.getIndexingMapsArray();
+    maps.erase(maps.begin() + 2);
+
+    OperationState state(op.getLoc(), op->getName());
+    state.addOperands(operands);
+    state.addTypes(op->getResultTypes());
+    for (NamedAttribute attr : op->getAttrs()) {
+      // The signedness of a zero point that no longer exists is meaningless,
+      // and the verifier rejects it.
+      if (attr.getName() == op.getZpUnsignedAttrName()) {
+        continue;
+      }
+      if (attr.getName() == op.getIndexingMapsAttrName()) {
+        state.addAttribute(attr.getName(),
+                           rewriter.getAffineMapArrayAttr(maps));
+        continue;
+      }
+      state.addAttribute(attr.getName(), attr.getValue());
+    }
+    Operation *symmetric = rewriter.create(state);
+    rewriter.replaceOp(op, symmetric->getResults());
+    return success();
+  }
+};
+
+} // namespace
+
+void QuantizeAffineOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                   MLIRContext *context) {
+  results.add<DropZeroZeroPoint<QuantizeAffineOp>>(context);
+}
+
+void DequantizeAffineOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                     MLIRContext *context) {
+  results.add<DropZeroZeroPoint<DequantizeAffineOp>>(context);
 }
 
 // Both ops implement LinalgFusionInterface and IndexingMapOpInterface, which
