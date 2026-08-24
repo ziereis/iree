@@ -68,6 +68,7 @@ Codegen::TileSwizzle getIntrinsicSwizzle(MMAIntrinsic mma, int operandIdx);
 
 // Returns the TileSwizzle for the given MMA attr and operand index.
 Codegen::TileSwizzle getSwizzle(DataTiledMMAAttr mma, int operandIdx);
+Codegen::TileSwizzle getSwizzle(DataTiledScaledMMAAttr mma, int operandIdx);
 
 // Returns the architectural vector register file capacity, in bytes, that the
 // inner-tiled MMA cost model may use to fit the union of ACC, LHS and RHS

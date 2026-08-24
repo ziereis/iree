@@ -130,6 +130,46 @@ def IREECPU_DataTiledMMAAttr
               "such as MMA_GENERIC_SCALAR_1x1x1.">:$acc_type);
 }
 
+// Prototype CPU block-scaled integer MMA. Each invocation computes one native
+// integer dot-product K block, converts that temporary i32 result to f32,
+// applies f32 LHS/RHS block scales, and accumulates into an f32 tile. Keeping
+// this distinct from DataTiledMMAAttr is important: the hardware accumulator
+// (i32) and persistent contraction accumulator (f32) have different types.
+//
+// The initial implementation intentionally supports a single intrinsic with no
+// cross-intrinsic unrolling. Once the arithmetic lowering is established, this
+// attribute can grow the intrinsics_{m,n,k} composition and swizzles used by
+// DataTiledMMAAttr.
+def IREECPU_DataTiledScaledMMAAttr
+    : AttrDef<
+          IREECPU_Dialect, "DataTiledScaledMMA",
+          [DeclareAttrInterfaceMethods<
+              IREECodegen_InnerTileDescAttrInterface,
+              ["getExpectedNumInputs", "getExpectedNumOutputs",
+               "verifyIndexingMaps", "getUndistributedTileTypes",
+               "getDistributedTileTypes", "getUndistributedTileDimExpansion",
+               "populateOperandOffsetsSizesStrides",
+               "getDistributionMappingKind", "getDistributionWorkerCount",
+               "buildUnderlyingOperations"]>]> {
+  let mnemonic = "data_tiled_scaled_mma_layout";
+  let cppNamespace = "::mlir::iree_compiler::IREE::CPU";
+
+  let description = [{
+    Describes a CPU integer MMA followed by per-K-block floating-point scales.
+    The four inputs are ordered as LHS values, RHS values, LHS scales, and RHS
+    scales; the output is the persistent floating-point accumulator.
+
+    This prototype supports
+    `MMA_X86_AVX512VNNI_1x16x4_I32_UI8_I8`: one unsigned-i8 LHS group is
+    broadcast, sixteen signed-i8 RHS groups are loaded contiguously, the native
+    dot product produces sixteen i32 values, and f32 scales are applied before
+    accumulating into sixteen f32 output values.
+  }];
+
+  let parameters = (ins EnumParameter<IREECPU_MMAIntrinsic>:$intrinsic);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
 //===----------------------------------------------------------------------===//
 // UKernelProvider attribute
 //===----------------------------------------------------------------------===//

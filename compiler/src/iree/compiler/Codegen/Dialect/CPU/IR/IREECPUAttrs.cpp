@@ -678,6 +678,24 @@ Codegen::TileSwizzle getSwizzle(IREE::CPU::DataTiledMMAAttr mma,
   return swizzle;
 }
 
+Codegen::TileSwizzle getSwizzle(IREE::CPU::DataTiledScaledMMAAttr mma,
+                                int operandIdx) {
+  using Dim = Codegen::TileSwizzle::Dim;
+  Codegen::TileSwizzle swizzle;
+  if (operandIdx != 0 && operandIdx != 1) {
+    return swizzle;
+  }
+  // Split the 32-element scale block into eight native four-byte VNNI groups
+  // and move that group dimension in front of M/N. This makes each B group a
+  // contiguous vector<16x4xi8> load while the same group is accumulated into
+  // i32 before applying the block's scales.
+  swizzle.expandShape() = {{Dim::internal(operandIdx == 0 ? 1 : 16)},
+                           {Dim::internal(1)},
+                           {Dim::internal(8), Dim::internal(4)}};
+  swizzle.permutation() = {2, 0, 1, 3};
+  return swizzle;
+}
+
 std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *ctx,
                                                 MMAIntrinsic intrinsic) {
   Type f64 = Float64Type::get(ctx);
@@ -819,6 +837,64 @@ Attribute DataTiledMMAAttr::getDistributionMappingKind() const {
 OpFoldResult
 DataTiledMMAAttr::getDistributionWorkerCount(OpBuilder &builder, Location loc,
                                              Operation *opToDistribute) const {
+  return OpFoldResult();
+}
+
+//===----------------------------------------------------------------------===//
+// DataTiledScaledMMA Attributes
+//===----------------------------------------------------------------------===//
+
+int64_t DataTiledScaledMMAAttr::getExpectedNumInputs() const { return 4; }
+
+int64_t DataTiledScaledMMAAttr::getExpectedNumOutputs() const { return 1; }
+
+LogicalResult
+DataTiledScaledMMAAttr::verifyIndexingMaps(ArrayRef<AffineMap> maps) const {
+  // The prototype lowering tests use an already isolated inner tile, for which
+  // every indexing map has an empty domain. Full scaled-contraction indexing
+  // verification will be added with encoding materialization.
+  return success(maps.size() == 5);
+}
+
+void DataTiledScaledMMAAttr::getUndistributedTileTypes(
+    SmallVectorImpl<VectorType> &result) const {
+  MLIRContext *ctx = getContext();
+  if (getIntrinsic() != MMAIntrinsic::MMA_X86_AVX512VNNI_1x16x4_I32_UI8_I8) {
+    result.clear();
+    return;
+  }
+  Type i8 = IntegerType::get(ctx, 8);
+  Type f32 = Float32Type::get(ctx);
+  result.assign({VectorType::get({8, 1, 1, 4}, i8),
+                 VectorType::get({8, 16, 1, 4}, i8), VectorType::get({1}, f32),
+                 VectorType::get({16}, f32), VectorType::get({1, 16}, f32)});
+}
+
+void DataTiledScaledMMAAttr::getDistributedTileTypes(
+    SmallVectorImpl<VectorType> &result) const {
+  getUndistributedTileTypes(result);
+}
+
+std::optional<SmallVector<int64_t, 2>>
+DataTiledScaledMMAAttr::getUndistributedTileDimExpansion(
+    int64_t operandIndex, int64_t logicalDim) const {
+  return std::nullopt;
+}
+
+LogicalResult DataTiledScaledMMAAttr::populateOperandOffsetsSizesStrides(
+    OpBuilder &builder, Location loc, uint32_t operandIndex, Value laneId,
+    ArrayRef<int64_t> permutation, SmallVectorImpl<OpFoldResult> &offsets,
+    SmallVectorImpl<OpFoldResult> &sizes,
+    SmallVectorImpl<OpFoldResult> &strides) const {
+  return failure();
+}
+
+Attribute DataTiledScaledMMAAttr::getDistributionMappingKind() const {
+  return Attribute();
+}
+
+OpFoldResult DataTiledScaledMMAAttr::getDistributionWorkerCount(
+    OpBuilder &builder, Location loc, Operation *opToDistribute) const {
   return OpFoldResult();
 }
 
@@ -1191,6 +1267,68 @@ LogicalResult DataTiledMMAAttr::buildUnderlyingOperations(
       getSwizzle(*this, /*operandIdx=*/1), getSwizzle(*this, /*operandIdx=*/2),
       getIntrinsicsM(), getIntrinsicsN(), getIntrinsicsK(), inputs, outputs,
       emitIntrinsic, results);
+}
+
+LogicalResult DataTiledScaledMMAAttr::buildUnderlyingOperations(
+    OpBuilder &builder, Location loc, ValueRange inputs, ValueRange outputs,
+    SmallVectorImpl<Value> &results) const {
+  if (getIntrinsic() != MMAIntrinsic::MMA_X86_AVX512VNNI_1x16x4_I32_UI8_I8 ||
+      inputs.size() != 4 || outputs.size() != 1) {
+    return failure();
+  }
+
+  SmallVector<VectorType> expectedTypes;
+  getDistributedTileTypes(expectedTypes);
+  if (!llvm::equal(expectedTypes,
+                   llvm::concat<Type>(inputs.getTypes(), outputs.getTypes()))) {
+    return failure();
+  }
+
+  Type i32 = builder.getI32Type();
+  Type f32 = builder.getF32Type();
+  auto lhsRegisterType = VectorType::get({4}, builder.getI8Type());
+  auto rhsRegisterType = VectorType::get({64}, builder.getI8Type());
+  auto dotAccType = VectorType::get({16}, i32);
+  Value zeroDotAcc = arith::ConstantOp::create(
+      builder, loc, dotAccType,
+      SplatElementsAttr::get(dotAccType, builder.getI32IntegerAttr(0)));
+
+  // The integer accumulator is local to this scale block. It must not be
+  // carried across outer K blocks because each block has distinct scales.
+  Value dot = zeroDotAcc;
+  for (int64_t group = 0; group < 8; ++group) {
+    Value lhsGroup = vector::ExtractOp::create(builder, loc, inputs[0],
+                                               ArrayRef<int64_t>{group});
+    Value rhsGroup = vector::ExtractOp::create(builder, loc, inputs[1],
+                                               ArrayRef<int64_t>{group});
+    Value lhsRegister =
+        vector::ShapeCastOp::create(builder, loc, lhsRegisterType, lhsGroup);
+    Value rhsRegister =
+        vector::ShapeCastOp::create(builder, loc, rhsRegisterType, rhsGroup);
+    dot = createCpuMmaIntrinsicCall(builder, loc, getIntrinsic(), lhsRegister,
+                                    rhsRegister, dot);
+  }
+
+  auto flatF32 = VectorType::get({16}, f32);
+  Value converted = arith::SIToFPOp::create(builder, loc, flatF32, dot);
+
+  Value lhsScale =
+      vector::ExtractOp::create(builder, loc, inputs[2], ArrayRef<int64_t>{0});
+  Value lhsScaleVector =
+      vector::BroadcastOp::create(builder, loc, flatF32, lhsScale);
+  Value rhsScaleVector =
+      vector::ShapeCastOp::create(builder, loc, flatF32, inputs[3]);
+  Value combinedScale =
+      arith::MulFOp::create(builder, loc, lhsScaleVector, rhsScaleVector);
+  Value scaledDot =
+      arith::MulFOp::create(builder, loc, converted, combinedScale);
+
+  Value flatAcc =
+      vector::ShapeCastOp::create(builder, loc, flatF32, outputs[0]);
+  Value flatResult = arith::AddFOp::create(builder, loc, flatAcc, scaledDot);
+  results.push_back(vector::ShapeCastOp::create(
+      builder, loc, cast<VectorType>(outputs[0].getType()), flatResult));
+  return success();
 }
 
 //===----------------------------------------------------------------------===//

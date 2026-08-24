@@ -1,5 +1,55 @@
 // RUN: iree-opt %s -iree-transform-dialect-interpreter -iree-transform-dialect-drop-schedule --split-input-file | FileCheck %s
 
+// Prototype block-scaled AVX-512 VNNI tile. The integer dot accumulator is
+// zero-initialized for this scale block, converted to f32, multiplied by a
+// broadcast LHS scale and vector RHS scales, then added to the persistent f32
+// accumulator.
+
+#scaled_accesses = [
+ affine_map<() -> ()>,
+ affine_map<() -> ()>,
+ affine_map<() -> ()>,
+ affine_map<() -> ()>,
+ affine_map<() -> ()>
+]
+func.func @lower_avx512vnni_1x16x32_i8_scaled_f32(
+    %lhs: vector<8x1x1x4xi8>, %rhs: vector<8x16x1x4xi8>,
+    %lhs_scale: vector<1xf32>, %rhs_scale: vector<16xf32>,
+    %acc: vector<1x16xf32>) -> vector<1x16xf32> {
+  %0 = iree_codegen.inner_tiled
+      ins(%lhs, %rhs, %lhs_scale, %rhs_scale) outs(%acc) {
+    indexing_maps = #scaled_accesses,
+    iterator_types = [],
+    kind = #iree_cpu.data_tiled_scaled_mma_layout<intrinsic = MMA_X86_AVX512VNNI_1x16x4_I32_UI8_I8>,
+    semantics = #iree_cpu.mma_semantics<>
+  } : vector<8x1x1x4xi8>, vector<8x16x1x4xi8>, vector<1xf32>, vector<16xf32>
+      into vector<1x16xf32>
+  return %0 : vector<1x16xf32>
+}
+
+module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%root: !transform.any_op {transform.readonly}) {
+    %func = transform.structured.match ops{["func.func"]} in %root
+        : (!transform.any_op) -> !transform.any_op
+    transform.apply_patterns to %func {
+      transform.apply_patterns.iree.lower_inner_tiled
+    } : !transform.any_op
+    transform.yield
+  }
+}
+
+// CHECK-LABEL: func @lower_avx512vnni_1x16x32_i8_scaled_f32
+//       CHECK:   %[[ZERO:.+]] = arith.constant dense<0> : vector<16xi32>
+// CHECK-COUNT-8:   llvm.call_intrinsic "llvm.x86.avx512.vpdpbusd.512"
+//       CHECK:   %[[DOT_F32:.+]] = arith.sitofp %{{.+}} : vector<16xi32> to vector<16xf32>
+//       CHECK:   %[[LHS_SCALE:.+]] = vector.extract %{{.+}}[0] : f32 from vector<1xf32>
+//       CHECK:   %[[LHS_SCALE_VEC:.+]] = vector.broadcast %[[LHS_SCALE]] : f32 to vector<16xf32>
+//       CHECK:   %[[COMBINED_SCALE:.+]] = arith.mulf %[[LHS_SCALE_VEC]], %{{.+}} : vector<16xf32>
+//       CHECK:   %[[SCALED_DOT:.+]] = arith.mulf %[[DOT_F32]], %[[COMBINED_SCALE]] : vector<16xf32>
+//       CHECK:   %[[RESULT:.+]] = arith.addf %{{.+}}, %[[SCALED_DOT]] : vector<16xf32>
+
+// -----
+
 // AVX-512 1×16×1 f32 → f32 with intrinsics_m=1, intrinsics_n=1, intrinsics_k=1.
 // Exercises the FMA shape (no widening) on the simplest singly-unrolled case.
 
