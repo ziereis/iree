@@ -144,7 +144,8 @@ static bool isScaledContractionBody(Block &block) {
     while (op) {
       if ((op->getNumOperands() == 1) ||
           !isa<arith::ExtFOp, arith::TruncFOp, arith::ScalingExtFOp,
-               arith::ScalingTruncFOp>(op)) {
+               arith::ScalingTruncFOp, arith::ScalingSIToFPOp,
+               arith::ScalingUIToFPOp>(op)) {
         break;
       }
       auto iface = dyn_cast<MemoryEffectOpInterface>(op);

@@ -1273,6 +1273,43 @@ util.func public @scaled_contraction_f4_f4_f8_f8_f32(
 
 // -----
 
+// Integer block-scaled contraction. The two scaling integer-to-float ops carry
+// the signedness required by VPDPBUSD while retaining the canonical scaled
+// contraction body shape.
+util.func public @scaled_contraction_ui8_i8_f32(
+    %a : tensor<16x8x4xi8>, %b : tensor<32x8x4xi8>,
+    %a_scales : tensor<16x8xf32>, %b_scales : tensor<32x8xf32>,
+    %c : tensor<16x32xf32>) -> tensor<16x32xf32> {
+  %0 = linalg.generic {
+      indexing_maps = [affine_map<(d0, d1, d2, d3) -> (d0, d2, d3)>,
+                       affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>,
+                       affine_map<(d0, d1, d2, d3) -> (d0, d2)>,
+                       affine_map<(d0, d1, d2, d3) -> (d1, d2)>,
+                       affine_map<(d0, d1, d2, d3) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel", "reduction", "reduction"]}
+      ins(%a, %b, %a_scales, %b_scales : tensor<16x8x4xi8>,
+          tensor<32x8x4xi8>, tensor<16x8xf32>, tensor<32x8xf32>)
+      outs(%c : tensor<16x32xf32>) {
+  ^bb0(%av: i8, %bv: i8, %as: f32, %bs: f32, %out: f32):
+    %scaled_a = arith.scaling_uitofp %av, %as : i8, f32 to f32
+    %scaled_b = arith.scaling_sitofp %bv, %bs : i8, f32 to f32
+    %product = arith.mulf %scaled_a, %scaled_b : f32
+    %sum = arith.addf %out, %product : f32
+    linalg.yield %sum : f32
+  } -> tensor<16x32xf32>
+  util.return %0 : tensor<16x32xf32>
+}
+
+// CHECK-ALL-LABEL:  util.func public @scaled_contraction_ui8_i8_f32
+// CHECK-ALL-DAG:      iree_encoding.set_encoding %{{.*}} : tensor<16x8x4xi8>
+// CHECK-ALL-DAG:      iree_encoding.set_encoding %{{.*}} : tensor<32x8x4xi8>
+// CHECK-ALL-DAG:      iree_encoding.set_encoding %{{.*}} : tensor<16x8xf32>
+// CHECK-ALL-DAG:      iree_encoding.set_encoding %{{.*}} : tensor<32x8xf32>
+// CHECK-ALL:          linalg.generic
+// CHECK-ALL-SAME:       iterator_types = ["parallel", "parallel", "reduction", "reduction"]
+
+// -----
+
 // Test dynamic scaled_matmul to verify encoding_dims are populated
 util.func public @scaled_contraction_dynamic(
     %a : tensor<?x?x32xf4E2M1FN>, %b : tensor<?x?x32xf4E2M1FN>,
