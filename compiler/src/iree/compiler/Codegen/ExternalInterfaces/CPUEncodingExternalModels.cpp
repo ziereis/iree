@@ -54,6 +54,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/DebugLog.h"
 #include "llvm/Support/InterleavedRange.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -64,6 +65,7 @@ namespace mlir::iree_compiler::IREE::CPU {
 
 using IREE::Codegen::MaterializeEncodingInfo;
 using IREE::Codegen::TileMxNxK;
+using IREE::Codegen::TileMxNxKxKb;
 using IREE::Codegen::TileOCxIC;
 
 namespace {
@@ -806,6 +808,134 @@ chooseCpuInnerTiledMmaForEncoding(MLIRContext *ctx,
   return IREE::CPU::DataTiledMMAAttr::get(ctx, intr, intrinsicsM, intrinsicsN,
                                           intrinsicsK, lhsType, rhsType,
                                           accType);
+}
+
+static IREE::CPU::DataTiledScaledMMAAttr
+chooseCpuInnerTiledScaledMmaForEncoding(MLIRContext *ctx,
+                                        IREE::Encoding::EncodingAttr encoding,
+                                        DictionaryAttr config) {
+  SmallVector<Type> elementTypes = encoding.getElementTypesArray();
+  if (elementTypes.size() != 5 || !elementTypes[0].isSignlessInteger(8) ||
+      !elementTypes[1].isSignlessInteger(8) || !elementTypes[2].isF32() ||
+      !elementTypes[3].isF32() || !elementTypes[4].isF32()) {
+    return {};
+  }
+  constexpr IREE::CPU::MMAIntrinsic intr =
+      IREE::CPU::MMAIntrinsic::MMA_X86_AVX512VNNI_1x16x4_I32_UI8_I8;
+  if (!llvm::is_contained(getMmaIntrinsicsForTargetConfig(config), intr)) {
+    return {};
+  }
+  return IREE::CPU::DataTiledScaledMMAAttr::get(ctx, intr);
+}
+
+static bool hasSupportedIntegerScalingBody(linalg::LinalgOp linalgOp) {
+  auto genericOp = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());
+  if (!genericOp || genericOp.getRegion().empty()) {
+    return false;
+  }
+  Block &body = genericOp.getRegion().front();
+  if (body.getNumArguments() != 5) {
+    return false;
+  }
+  auto add = body.getTerminator()->getOperand(0).getDefiningOp<arith::AddFOp>();
+  if (!add) {
+    return false;
+  }
+  Value contribution;
+  if (add.getLhs() == body.getArgument(4)) {
+    contribution = add.getRhs();
+  } else if (add.getRhs() == body.getArgument(4)) {
+    contribution = add.getLhs();
+  } else {
+    return false;
+  }
+  auto mul = contribution.getDefiningOp<arith::MulFOp>();
+  if (!mul) {
+    return false;
+  }
+  auto isLhsScale = [&](Value value) {
+    auto scale = value.getDefiningOp<arith::ScalingUIToFPOp>();
+    return scale && scale.getIn() == body.getArgument(0) &&
+           scale.getScale() == body.getArgument(2);
+  };
+  auto isRhsScale = [&](Value value) {
+    auto scale = value.getDefiningOp<arith::ScalingSIToFPOp>();
+    return scale && scale.getIn() == body.getArgument(1) &&
+           scale.getScale() == body.getArgument(3);
+  };
+  return (isLhsScale(mul.getLhs()) && isRhsScale(mul.getRhs())) ||
+         (isLhsScale(mul.getRhs()) && isRhsScale(mul.getLhs()));
+}
+
+static Operation *lowerScaledContractionToInnerTiled(
+    OpBuilder &builder, linalg::LinalgOp linalgOp, ValueRange operands,
+    IREE::Encoding::LayoutMaterializerAttr layoutAttr) {
+  if (!linalgOp.hasPureTensorSemantics() ||
+      !hasSupportedIntegerScalingBody(linalgOp)) {
+    return nullptr;
+  }
+  SmallVector<Value> inputs = linalgOp.getDpsInputs();
+  SmallVector<Value> outputs = linalgOp.getDpsInits();
+  if (inputs.size() != 4 || outputs.size() != 1 || operands.size() != 5) {
+    return nullptr;
+  }
+
+  SmallVector<IREE::Encoding::EncodingAttr> encodings;
+  for (Value operand : llvm::concat<Value>(inputs, outputs)) {
+    auto type = dyn_cast<RankedTensorType>(operand.getType());
+    auto encoding = type ? IREE::Encoding::getEncodingAttr(type) : nullptr;
+    if (!encoding) {
+      return nullptr;
+    }
+    encodings.push_back(encoding);
+  }
+  constexpr int64_t expectedIndices[] = {
+      IREE::Encoding::SCALED_MATMUL_LHS, IREE::Encoding::SCALED_MATMUL_RHS,
+      IREE::Encoding::SCALED_MATMUL_LHS_SCALES,
+      IREE::Encoding::SCALED_MATMUL_RHS_SCALES,
+      IREE::Encoding::SCALED_MATMUL_RESULT};
+  for (auto [encoding, expected] :
+       llvm::zip_equal(encodings, expectedIndices)) {
+    if (encoding.getOpType().getValue() !=
+            IREE::Encoding::EncodingOpType::scaled_matmul ||
+        encoding.getOperandIndex().getInt() != expected) {
+      return nullptr;
+    }
+  }
+
+  auto dims = IREE::LinalgExt::inferScaledContractionDims(linalgOp);
+  if (failed(dims) || !dims->batch.empty() || dims->m.size() != 1 ||
+      dims->n.size() != 1 || dims->k.size() != 1 || dims->kB.size() != 1) {
+    return nullptr;
+  }
+
+  DictionaryAttr config;
+  if (auto resolver = dyn_cast<IREE::CPU::CPUEncodingResolverAttr>(
+          cast<Attribute>(layoutAttr))) {
+    config = resolver.getConfiguration();
+  }
+  IREE::CPU::DataTiledScaledMMAAttr kind =
+      chooseCpuInnerTiledScaledMmaForEncoding(builder.getContext(),
+                                              encodings.back(), config);
+  if (!kind) {
+    return nullptr;
+  }
+
+  MLIRContext *ctx = builder.getContext();
+  int64_t numLoops = linalgOp.getNumLoops();
+  AffineExpr m = builder.getAffineDimExpr(dims->m[0]);
+  AffineExpr n = builder.getAffineDimExpr(dims->n[0]);
+  AffineExpr k = builder.getAffineDimExpr(dims->k[0]);
+  AffineExpr kb = builder.getAffineDimExpr(dims->kB[0]);
+  SmallVector<AffineMap> maps = {AffineMap::get(numLoops, 0, {m, k, kb}, ctx),
+                                 AffineMap::get(numLoops, 0, {n, k, kb}, ctx),
+                                 AffineMap::get(numLoops, 0, {m, k}, ctx),
+                                 AffineMap::get(numLoops, 0, {n, k}, ctx),
+                                 AffineMap::get(numLoops, 0, {m, n}, ctx)};
+  auto semantics = IREE::CPU::InnerTiledSemanticsAttr::get(ctx);
+  return IREE::Codegen::InnerTiledOp::create(
+      builder, linalgOp.getLoc(), operands.take_front(4), operands.take_back(1),
+      maps, linalgOp.getIteratorTypesArray(), kind, semantics);
 }
 
 /// Lowers a contraction under a `CPUEncodingResolverAttr` with
@@ -1589,6 +1719,31 @@ struct CPUEncodingPackedLayoutMaterializerAttr
       return maybeInfo.value();
     }
 
+    DictionaryAttr config = layoutAttr.getConfiguration();
+    if (encoding.getOpType().getValue() ==
+        IREE::Encoding::EncodingOpType::scaled_matmul) {
+      if (!getEnableInnerTiledFromConfig(config) ||
+          !chooseCpuInnerTiledScaledMmaForEncoding(type.getContext(), encoding,
+                                                   config)) {
+        return info;
+      }
+      FailureOr<MaterializeEncodingInfo> maybeInfo =
+          getEncodingInfoForMatmul(encoding, TileMxNxKxKb{1, 16, 1, 32});
+      if (failed(maybeInfo)) {
+        return info;
+      }
+      info = *maybeInfo;
+      int64_t operandIndex = encoding.getOperandIndex().getInt();
+      if (operandIndex == IREE::Encoding::SCALED_MATMUL_LHS ||
+          operandIndex == IREE::Encoding::SCALED_MATMUL_RHS) {
+        info.swizzle =
+            IREE::CPU::getSwizzle(chooseCpuInnerTiledScaledMmaForEncoding(
+                                      type.getContext(), encoding, config),
+                                  operandIndex);
+      }
+      return info;
+    }
+
     // We only know about contractions with {Batch, M, N, K} <= 1 at the moment.
     auto cDims = getEncodingContractionDims(encoding);
     if (failed(cDims) || cDims->batch.size() > 1 || cDims->m.size() > 1 ||
@@ -1596,7 +1751,6 @@ struct CPUEncodingPackedLayoutMaterializerAttr
       return info;
     }
 
-    DictionaryAttr config = layoutAttr.getConfiguration();
     if (getEnableInnerTiledFromConfig(config)) {
       return getInnerTiledEncodingInfo(type.getContext(), encoding, *cDims,
                                        config);
@@ -1712,9 +1866,13 @@ struct CPUEncodingResolverMaterializerAttr final
       return lowerFillOpWithResolvedLayouts(b, fillOp, convertedResTypes,
                                             convertedOperands);
     }
-    // Scaled contraction (MX matmul) is not yet supported on CPU, so we drop
-    // the encoding and clone the op as-is.
     if (IREE::LinalgExt::isaScaledContractionOpInterface(linalgOp)) {
+      DictionaryAttr config = layoutAttr.getConfiguration();
+      if (getEnableInnerTiledFromConfig(config)) {
+        return lowerScaledContractionToInnerTiled(
+            b, linalgOp, convertedOperands,
+            cast<IREE::Encoding::LayoutMaterializerAttr>(layoutAttr));
+      }
       int64_t numInputs = linalgOp.getNumDpsInputs();
       return dropEncodingAndCloneOp(b, linalgOp,
                                     convertedOperands.take_front(numInputs),

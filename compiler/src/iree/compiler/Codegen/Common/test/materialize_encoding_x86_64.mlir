@@ -26,6 +26,54 @@ func.func @set_encoding_with_padding_semantics_bf16_x86_64_avx512f(%arg0: tensor
 
 // -----
 
+#scaled_map_a = affine_map<(m, n, ko, k0) -> (m, ko, k0)>
+#scaled_map_b = affine_map<(m, n, ko, k0) -> (n, ko, k0)>
+#scaled_map_as = affine_map<(m, n, ko, k0) -> (m, ko)>
+#scaled_map_bs = affine_map<(m, n, ko, k0) -> (n, ko)>
+#scaled_map_c = affine_map<(m, n, ko, k0) -> (m, n)>
+#scaled_lhs = #iree_encoding.encoding<operand_index = 0 : index, op_type = scaled_matmul, element_types = [i8, i8, f32, f32, f32], user_indexing_maps = [#scaled_map_a, #scaled_map_b, #scaled_map_as, #scaled_map_bs, #scaled_map_c], iteration_sizes = [16, 32, 8, 4]>
+#scaled_rhs = #iree_encoding.encoding<operand_index = 1 : index, op_type = scaled_matmul, element_types = [i8, i8, f32, f32, f32], user_indexing_maps = [#scaled_map_a, #scaled_map_b, #scaled_map_as, #scaled_map_bs, #scaled_map_c], iteration_sizes = [16, 32, 8, 4]>
+#scaled_lhs_scales = #iree_encoding.encoding<operand_index = 2 : index, op_type = scaled_matmul, element_types = [i8, i8, f32, f32, f32], user_indexing_maps = [#scaled_map_a, #scaled_map_b, #scaled_map_as, #scaled_map_bs, #scaled_map_c], iteration_sizes = [16, 32, 8, 4]>
+#scaled_rhs_scales = #iree_encoding.encoding<operand_index = 3 : index, op_type = scaled_matmul, element_types = [i8, i8, f32, f32, f32], user_indexing_maps = [#scaled_map_a, #scaled_map_b, #scaled_map_as, #scaled_map_bs, #scaled_map_c], iteration_sizes = [16, 32, 8, 4]>
+#scaled_result = #iree_encoding.encoding<operand_index = 4 : index, op_type = scaled_matmul, element_types = [i8, i8, f32, f32, f32], user_indexing_maps = [#scaled_map_a, #scaled_map_b, #scaled_map_as, #scaled_map_bs, #scaled_map_c], iteration_sizes = [16, 32, 8, 4]>
+
+func.func @scaled_ui8_i8_inner_tiled_avx512vnni(
+    %a: tensor<16x8x4xi8, #scaled_lhs>,
+    %b: tensor<32x8x4xi8, #scaled_rhs>,
+    %as: tensor<16x8xf32, #scaled_lhs_scales>,
+    %bs: tensor<32x8xf32, #scaled_rhs_scales>,
+    %c: tensor<16x32xf32, #scaled_result>) -> tensor<16x32xf32, #scaled_result>
+    attributes {hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {target_triple = "x86_64-xyz-xyz", cpu_features = "+avx512f,+avx512vnni", enable_inner_tiled = true, iree.encoding.resolver = #iree_cpu.cpu_encoding_resolver<>}>} {
+  %0 = linalg.generic {
+      indexing_maps = [#scaled_map_a, #scaled_map_b, #scaled_map_as,
+                       #scaled_map_bs, #scaled_map_c],
+      iterator_types = ["parallel", "parallel", "reduction", "reduction"]}
+      ins(%a, %b, %as, %bs : tensor<16x8x4xi8, #scaled_lhs>,
+          tensor<32x8x4xi8, #scaled_rhs>, tensor<16x8xf32, #scaled_lhs_scales>,
+          tensor<32x8xf32, #scaled_rhs_scales>)
+      outs(%c : tensor<16x32xf32, #scaled_result>) {
+  ^bb0(%av: i8, %bv: i8, %ascale: f32, %bscale: f32, %out: f32):
+    %sa = arith.scaling_uitofp %av, %ascale : i8, f32 to f32
+    %sb = arith.scaling_sitofp %bv, %bscale : i8, f32 to f32
+    %product = arith.mulf %sa, %sb : f32
+    %sum = arith.addf %out, %product : f32
+    linalg.yield %sum : f32
+  } -> tensor<16x32xf32, #scaled_result>
+  return %0 : tensor<16x32xf32, #scaled_result>
+}
+
+// CHECK-LABEL: func.func @scaled_ui8_i8_inner_tiled_avx512vnni
+// CHECK-SAME: %[[A:.+]]: tensor<16x8x1x8x1x1x4xi8>
+// CHECK-SAME: %[[B:.+]]: tensor<2x8x1x8x16x1x4xi8>
+// CHECK-SAME: %[[AS:.+]]: tensor<16x8x1x1xf32>
+// CHECK-SAME: %[[BS:.+]]: tensor<2x8x16x1xf32>
+// CHECK-SAME: %[[C:.+]]: tensor<16x2x1x16xf32>
+// CHECK: iree_codegen.inner_tiled ins(%[[A]], %[[B]], %[[AS]], %[[BS]]) outs(%[[C]])
+// CHECK-SAME: iterator_types = [#linalg.iterator_type<parallel>, #linalg.iterator_type<parallel>, #linalg.iterator_type<reduction>, #linalg.iterator_type<reduction>]
+// CHECK-SAME: kind = #iree_cpu.data_tiled_scaled_mma_layout<intrinsic = MMA_X86_AVX512VNNI_1x16x4_I32_UI8_I8>
+
+// -----
+
 #map = affine_map<(d0, d1, d2) -> (d0, d2)>
 #map1 = affine_map<(d0, d1, d2) -> (d2, d1)>
 #map2 = affine_map<(d0, d1, d2) -> (d0, d1)>

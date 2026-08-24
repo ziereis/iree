@@ -3102,6 +3102,27 @@ static LogicalResult setRootConfig(mlir::FunctionOpInterface entryPointFn,
   // both defeat that and bloat the IR. This mirrors the equivalent split
   // in `setDataTiledMmaInnerTiledLoweringConfig` on the GPU side.
   SmallVector<int64_t> vecTileSizes(numLoops, 1);
+
+  // The initial CPU scaled-MMA descriptor has a one-row intrinsic tile. Give
+  // it four outer M iterations per workgroup/vector tile so lowering creates
+  // four independent accumulator vectors and reuses each B/B-scale tile over
+  // four A rows. Besides exposing instruction-level parallelism, this reduces
+  // task scheduling overhead by 4x compared with one 1x16 output tile per
+  // workgroup. Keep N at one tile because a second 16-column accumulator per
+  // row would bring this prototype close to its AVX-512 register budget once
+  // integer temporaries and scales are included.
+  if (isa<IREE::CPU::DataTiledScaledMMAAttr>(op.getKind())) {
+    auto firstParallel =
+        llvm::find(iteratorTypes, utils::IteratorType::parallel);
+    if (firstParallel != iteratorTypes.end()) {
+      unsigned mIndex = std::distance(iteratorTypes.begin(), firstParallel);
+      int64_t mTile = bounds[mIndex] == ShapedType::kDynamic
+                          ? 4
+                          : std::min<int64_t>(4, bounds[mIndex]);
+      distTileSizes[mIndex] = mTile;
+      vecTileSizes[mIndex] = mTile;
+    }
+  }
   if (ukernelDescriptor) {
     for (auto [i, kind] : llvm::enumerate(iteratorTypes)) {
       if (kind == utils::IteratorType::reduction) {

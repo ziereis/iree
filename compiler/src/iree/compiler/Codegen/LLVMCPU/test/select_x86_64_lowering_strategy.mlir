@@ -1887,3 +1887,34 @@ func.func @inner_tiled_avx512_1x16x1_f32(%lhs: tensor<2x4x2x1xf32>, %rhs: tensor
 //  CHECK-SAME:     translation_info = #[[INNER_TILED_TRANSLATION]]
 //       CHECK:   iree_codegen.inner_tiled
 //  CHECK-SAME:       lowering_config = #[[INNER_TILED_CONFIG]]
+
+// -----
+
+#scaled_target = #hal.executable.target<"llvm-cpu", "embedded-elf-x86_64", {cpu_features = "+avx512f,+avx512vnni", native_vector_size = 64 : index, target_triple = "x86_64-unknown-unknown-eabi-elf"}>
+func.func @scaled_inner_tiled_avx512vnni_m4(
+    %a: tensor<16x64x1x8x1x1x4xi8>,
+    %b: tensor<4x64x1x8x16x1x4xi8>,
+    %as: tensor<16x64x1xf32>, %bs: tensor<4x64x16xf32>,
+    %acc: tensor<16x4x1x16xf32>) -> tensor<16x4x1x16xf32>
+    attributes {hal.executable.target = #scaled_target} {
+  %0 = iree_codegen.inner_tiled ins(%a, %b, %as, %bs) outs(%acc) {
+    indexing_maps = [
+      affine_map<(m, n, ko, k0) -> (m, ko, k0)>,
+      affine_map<(m, n, ko, k0) -> (n, ko, k0)>,
+      affine_map<(m, n, ko, k0) -> (m, ko)>,
+      affine_map<(m, n, ko, k0) -> (n, ko)>,
+      affine_map<(m, n, ko, k0) -> (m, n)>],
+    iterator_types = [#linalg.iterator_type<parallel>,
+                      #linalg.iterator_type<parallel>,
+                      #linalg.iterator_type<reduction>,
+                      #linalg.iterator_type<reduction>],
+    kind = #iree_cpu.data_tiled_scaled_mma_layout<intrinsic = MMA_X86_AVX512VNNI_1x16x4_I32_UI8_I8>,
+    semantics = #iree_cpu.mma_semantics<>
+  } : tensor<16x64x1x8x1x1x4xi8>, tensor<4x64x1x8x16x1x4xi8>,
+      tensor<16x64x1xf32>, tensor<4x64x16xf32> into tensor<16x4x1x16xf32>
+  return %0 : tensor<16x4x1x16xf32>
+}
+// CHECK-DAG: #[[SCALED_CONFIG:.+]] = #iree_cpu.lowering_config<distribution = [4, 1, 0, 0], vector_common_parallel = [4, 1, 0, 0], vector_reduction = [0, 0, 1, 1]>
+// CHECK-LABEL: func.func @scaled_inner_tiled_avx512vnni_m4
+// CHECK: iree_codegen.inner_tiled
+// CHECK-SAME: lowering_config = #[[SCALED_CONFIG]]
